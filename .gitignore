@@ -1,0 +1,9 @@
+node_modules/
+dist/
+coverage/
+.vite/
+.turbo/
+.tmp/
+*.tsbuildinfo
+jscpd-report/
+blobs/

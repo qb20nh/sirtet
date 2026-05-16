@@ -1,0 +1,19 @@
+{
+  "$schema": "https://raw.githubusercontent.com/kucherenko/jscpd/master/schemas/options.json",
+  "threshold": 1,
+  "reporters": ["console"],
+  "gitignore": true,
+  "ignore": [
+    "index.html",
+    "node_modules/**",
+    "dist/**",
+    "coverage/**",
+    ".vite/**",
+    "*.tsbuildinfo",
+    "tsconfig*.json",
+    "pnpm-lock.yaml"
+  ],
+  "formats": ["typescript", "tsx", "javascript", "jsx", "css", "json", "markdown"],
+  "minLines": 6,
+  "minTokens": 50
+}

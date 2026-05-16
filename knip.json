@@ -1,0 +1,7 @@
+{
+  "$schema": "https://unpkg.com/knip@6/schema.json",
+  "entry": ["src/vite-env.d.ts", "src/styles.css", "vite.config.ts", "vitest.config.ts"],
+  "project": ["src/**/*.{ts,tsx,css}", "test/**/*.{ts,tsx}", "*.config.ts", "tsconfig*.json"],
+  "ignore": ["index.html", "dist/**", "coverage/**", ".vite/**"],
+  "ignoreDependencies": ["@preact/compat", "@types/react-dom"]
+}

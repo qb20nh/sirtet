@@ -1,0 +1,42 @@
+{
+  "name": "sirtet",
+  "version": "0.1.0",
+  "description": "˙sᴉɹʇǝʇ ǝsɹǝʌǝɹ ∀",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc -b",
+    "test": "vitest run --passWithNoTests",
+    "test:watch": "vitest",
+    "coverage": "vitest run --coverage --passWithNoTests",
+    "lint": "biome check .",
+    "format": "biome format --write .",
+    "knip": "knip --no-config-hints",
+    "jscpd": "jscpd --config .jscpd.json .",
+    "quality": "concurrently --kill-others-on-fail --success all --names typecheck,lint,coverage,knip,jscpd \"pnpm typecheck\" \"pnpm lint\" \"pnpm coverage\" \"pnpm knip\" \"pnpm jscpd\""
+  },
+  "keywords": [],
+  "author": "qb20nh",
+  "license": "MIT",
+  "packageManager": "pnpm@10.30.3",
+  "devDependencies": {
+    "@biomejs/biome": "^2.4.15",
+    "@preact/compat": "^18.3.2",
+    "@preact/preset-vite": "^2.10.5",
+    "@tailwindcss/vite": "^4.3.0",
+    "@types/node": "^25.7.0",
+    "@types/react-dom": "^19.2.3",
+    "@vitest/coverage-v8": "^4.1.6",
+    "concurrently": "^9.2.1",
+    "jscpd": "^4.1.1",
+    "knip": "^6.13.1",
+    "preact": "^10.29.1",
+    "tailwindcss": "^4.3.0",
+    "typescript": "^6.0.3",
+    "vite": "^8.0.12",
+    "vitest": "^4.1.6"
+  }
+}
