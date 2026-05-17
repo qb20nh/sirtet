@@ -51,7 +51,7 @@ export function drawGame(
   drawBaseline(context, canvas.width);
   drawQueuedPiece(context, state);
   drawActivePiece(context, state);
-  drawGhost(context, state);
+  drawCarveCursor(context, state);
 
   context.restore();
 }
@@ -76,7 +76,7 @@ function drawGrid(context: CanvasRenderingContext2D, width: number): void {
 }
 
 function drawBoard(context: CanvasRenderingContext2D, state: GameSnapshot): void {
-  for (let row = 0; row < ROWS; row++) {
+  for (let row = VISIBLE_TOP; row < ROWS; row++) {
     for (let col = 0; col < COLS; col++) {
       if (state.board[row][col] !== 1) continue;
 
@@ -111,6 +111,8 @@ function drawQueuedPiece(context: CanvasRenderingContext2D, state: GameSnapshot)
   context.lineWidth = 2;
 
   for (const cell of state.queuedPiece.startCells) {
+    if (!isVisibleCell(cell)) continue;
+
     context.strokeRect(
       cell.x * BLOCK_SIZE + 2,
       cell.y * BLOCK_SIZE + 2,
@@ -138,6 +140,8 @@ function fillCells(
   cells: Array<{ x: number; y: number }>,
 ): void {
   for (const cell of cells) {
+    if (!isVisibleCell(cell)) continue;
+
     context.fillRect(
       cell.x * BLOCK_SIZE + 2,
       cell.y * BLOCK_SIZE + 2,
@@ -147,37 +151,26 @@ function fillCells(
   }
 }
 
-function drawGhost(context: CanvasRenderingContext2D, state: GameSnapshot): void {
+function drawCarveCursor(context: CanvasRenderingContext2D, state: GameSnapshot): void {
   if (state.gameState !== 'PLAYING') return;
 
-  if (state.ghostValid && state.ghostPath) {
-    context.strokeStyle = 'rgba(34, 197, 94, 0.3)';
-    context.lineWidth = 4;
-    context.beginPath();
-    context.moveTo(
-      state.ghostPath[0].x * BLOCK_SIZE + BLOCK_SIZE / 2,
-      state.ghostPath[0].y * BLOCK_SIZE + BLOCK_SIZE / 2,
-    );
-
-    for (let index = 1; index < state.ghostPath.length; index++) {
-      context.lineTo(
-        state.ghostPath[index].x * BLOCK_SIZE + BLOCK_SIZE / 2,
-        state.ghostPath[index].y * BLOCK_SIZE + BLOCK_SIZE / 2,
-      );
-    }
-
-    context.stroke();
-  }
-
   const cells = getCells(state.currentShapeType, state.mouseX, state.mouseY, state.currentRotation);
-  context.fillStyle = state.ghostValid ? 'rgba(34, 197, 94, 0.8)' : 'rgba(239, 68, 68, 0.8)';
+  context.strokeStyle =
+    state.ghostValid && state.currentShapeType ? SHAPES[state.currentShapeType].color : '#94a3b8';
+  context.lineWidth = 3;
 
   for (const cell of cells) {
-    context.fillRect(
-      cell.x * BLOCK_SIZE + 1,
-      cell.y * BLOCK_SIZE + 1,
-      BLOCK_SIZE - 2,
-      BLOCK_SIZE - 2,
+    if (!isVisibleCell(cell)) continue;
+
+    context.strokeRect(
+      cell.x * BLOCK_SIZE + 3,
+      cell.y * BLOCK_SIZE + 3,
+      BLOCK_SIZE - 6,
+      BLOCK_SIZE - 6,
     );
   }
+}
+
+function isVisibleCell(cell: { y: number }): boolean {
+  return cell.y >= VISIBLE_TOP && cell.y < ROWS;
 }

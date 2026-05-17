@@ -25,7 +25,7 @@ import {
 } from '../src/game';
 import { moveToValidPlacement } from './game-helpers';
 
-type TestEscapePiece = ReturnType<typeof createEscapePiece>;
+type TestEscapePiece = NonNullable<ReturnType<ReverseTetrisEngine['snapshot']>['activePiece']>;
 type TestCarveState = {
   activePiece: TestEscapePiece | null;
   board: number[][];
@@ -152,6 +152,31 @@ describe('ReverseTetrisEngine', () => {
 
     expect(engine.snapshot().gameState).toBe('GAMEOVER');
     expect(engine.snapshot().statusReason).toContain('Too slow');
+  });
+
+  it('randomizes horizontal and rotation playback timing while upward movement stays constant', () => {
+    const first = carveRotatedEscapePiece(createTestRng(123));
+    const second = carveRotatedEscapePiece(createTestRng(123));
+    const different = carveRotatedEscapePiece(createTestRng(456));
+
+    expect(first.path).toEqual(second.path);
+    expect(first.pathTimes).toEqual(second.pathTimes);
+    expect({ path: first.path, pathTimes: first.pathTimes }).not.toEqual({
+      path: different.path,
+      pathTimes: different.pathTimes,
+    });
+    expect(first.pathTimes).toHaveLength(first.path.length);
+    expectPathReachesSpawnAndExits(first.type, first.path);
+    expectPathUsesSingleActionSteps(first.path);
+    expectNonUpwardStepBeforeSpawnGate(first.path, (step, previous) => step.x !== previous.x);
+    expectNonUpwardStepBeforeSpawnGate(first.path, (step, previous) => step.r !== previous.r);
+    expectUpwardStepsUseConstantBeats(first.path, first.pathTimes);
+    expectNonUpwardStepUsesFractionalBeat(first.path, first.pathTimes, (step, previous) => {
+      return step.x !== previous.x || step.r !== previous.r;
+    });
+    expectNonUpwardStepUsesFractionalBeat(first.path, first.pathTimes, (step, previous) => {
+      return step.r !== previous.r;
+    });
   });
 
   it('keeps playing in easy mode when a piece reaches the top without a queue', () => {
@@ -536,8 +561,90 @@ function expectPathUsesSingleActionSteps(path: PathStep[] | null | undefined): v
   }
 }
 
+function expectNonUpwardStepBeforeSpawnGate(
+  path: PathStep[] | null | undefined,
+  predicate: (step: PathStep, previous: PathStep) => boolean,
+): void {
+  expect(path).toBeDefined();
+
+  const steps = path ?? [];
+  const earlyNonUpwardStep = steps.find((step, index) => {
+    if (index === 0) return false;
+    const previous = steps[index - 1];
+    return step.y === previous.y && step.y > VISIBLE_TOP + 4 && predicate(step, previous);
+  });
+
+  expect(earlyNonUpwardStep).toBeDefined();
+}
+
+function expectUpwardStepsUseConstantBeats(
+  path: PathStep[],
+  pathTimes: number[] | undefined,
+): void {
+  expect(pathTimes).toBeDefined();
+
+  let upwardBeat = 0;
+  for (let index = 1; index < path.length; index++) {
+    if (path[index].y === path[index - 1].y - 1) {
+      upwardBeat++;
+      expect(pathTimes?.[index]).toBe(upwardBeat);
+    }
+  }
+}
+
+function expectNonUpwardStepUsesFractionalBeat(
+  path: PathStep[],
+  pathTimes: number[] | undefined,
+  predicate: (step: PathStep, previous: PathStep) => boolean,
+): void {
+  expect(pathTimes).toBeDefined();
+
+  const timingStep = path.findIndex((step, index) => {
+    if (index === 0) return false;
+    return step.y === path[index - 1].y && predicate(step, path[index - 1]);
+  });
+
+  expect(timingStep).toBeGreaterThan(0);
+  expect(Number.isInteger(pathTimes?.[timingStep] ?? 0)).toBe(false);
+}
+
 function isFullyAboveBoard(type: ShapeType, step: PathStep): boolean {
   return getCells(type, step.x, step.y, step.r).every((cell) => cell.y < 0);
+}
+
+function carveRotatedEscapePiece(rng: () => number) {
+  const engine = new ReverseTetrisEngine(rng);
+  engine.start();
+  const internals = engine as unknown as {
+    state: TestCarveState;
+    carve: () => boolean;
+    validateGhost: () => boolean;
+  };
+
+  primeCarveState(internals.state, createInitialBoard(), BASELINE - 3);
+  internals.state.currentRotation = 1;
+  internals.state.ghostPath = findEscapePath(internals.state.board, 'O', 0, BASELINE - 3, 1);
+  internals.state.ghostValid = Boolean(internals.state.ghostPath);
+
+  expect(internals.validateGhost()).toBe(true);
+  expect(internals.carve()).toBe(true);
+  const activePiece = internals.state.activePiece;
+  expect(activePiece).not.toBeNull();
+  if (!activePiece) throw new Error('Expected a randomized active escape piece.');
+
+  return activePiece;
+}
+
+function createTestRng(seed: number): () => number {
+  let state = seed >>> 0;
+
+  return () => {
+    state = (state + 0x6d2b79f5) >>> 0;
+    let value = state;
+    value = Math.imul(value ^ (value >>> 15), value | 1);
+    value ^= value + Math.imul(value ^ (value >>> 7), value | 61);
+    return ((value ^ (value >>> 14)) >>> 0) / 0x100000000;
+  };
 }
 
 function createEscapePiece(type: 'I' | 'O') {

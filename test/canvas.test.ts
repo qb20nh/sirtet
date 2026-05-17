@@ -1,23 +1,68 @@
 import { describe, expect, it } from 'vitest';
 
 import { drawGame, drawShapePreview } from '../src/canvas';
-import { ReverseTetrisEngine } from '../src/game';
+import { BLOCK_SIZE, ReverseTetrisEngine, SHAPES, VISIBLE_TOP } from '../src/game';
 import { moveToValidPlacement } from './game-helpers';
 
+type RecordedRect = {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+};
+
+type RecordingContext = CanvasRenderingContext2D & {
+  calls: string[];
+  fillRects: RecordedRect[];
+  strokeRects: string[];
+  strokes: string[];
+};
+
 describe('canvas drawing helpers', () => {
-  it('draws the board, baseline, and ghost preview', () => {
+  it('draws the board, baseline, and carve cursor outline', () => {
     const context = createRecordingContext();
     const engine = new ReverseTetrisEngine(() => 0.5);
     engine.start();
     moveToValidPlacement(engine);
+    const state = engine.snapshot();
 
-    drawGame(context, { width: 300, height: 720 }, engine.snapshot());
+    drawGame(context, { width: 300, height: 720 }, state);
 
     expect(context.calls).toContain('clearRect');
     expect(context.calls).toContain('save');
     expect(context.calls).toContain('translate');
     expect(context.calls.filter((call) => call === 'fillRect').length).toBeGreaterThan(40);
+    expect(context.strokes).not.toContain('rgba(34, 197, 94, 0.3)');
+    expect(context.strokeRects).toContain(
+      state.currentShapeType ? SHAPES[state.currentShapeType].color : '',
+    );
     expect(context.calls).toContain('restore');
+  });
+
+  it('draws invalid carve cursors as gray outlines', () => {
+    const context = createRecordingContext();
+    const engine = new ReverseTetrisEngine(() => 0.5);
+    engine.start();
+    moveToValidPlacement(engine);
+    const state = { ...engine.snapshot(), ghostValid: false };
+
+    drawGame(context, { width: 300, height: 720 }, state);
+
+    expect(context.strokeRects).toContain('#94a3b8');
+  });
+
+  it('does not render blocks from hidden rows', () => {
+    const context = createRecordingContext();
+    const engine = new ReverseTetrisEngine(() => 0.5);
+    engine.start();
+    const state = engine.snapshot();
+    const board = state.board.map((row, rowIndex) =>
+      row.map(() => (rowIndex === VISIBLE_TOP - 1 ? 1 : 0)),
+    );
+
+    drawGame(context, { width: 300, height: 720 }, { ...state, board });
+
+    expect(context.fillRects.some((rect) => rect.y < VISIBLE_TOP * BLOCK_SIZE)).toBe(false);
   });
 
   it('draws and clears mini shape previews', () => {
@@ -65,11 +110,14 @@ describe('canvas drawing helpers', () => {
 function createRecordingContext() {
   return {
     calls: [] as string[],
+    fillRects: [] as RecordedRect[],
     fillStyle: '',
     globalAlpha: 1,
     lineWidth: 1,
     shadowBlur: 0,
     shadowColor: '',
+    strokeRects: [] as string[],
+    strokes: [] as string[],
     strokeStyle: '',
     beginPath() {
       this.calls.push('beginPath');
@@ -77,8 +125,9 @@ function createRecordingContext() {
     clearRect() {
       this.calls.push('clearRect');
     },
-    fillRect() {
+    fillRect(x = 0, y = 0, width = 0, height = 0) {
       this.calls.push('fillRect');
+      this.fillRects.push({ x, y, width, height });
     },
     lineTo() {
       this.calls.push('lineTo');
@@ -94,12 +143,14 @@ function createRecordingContext() {
     },
     stroke() {
       this.calls.push('stroke');
+      this.strokes.push(this.strokeStyle);
     },
     strokeRect() {
       this.calls.push('strokeRect');
+      this.strokeRects.push(this.strokeStyle);
     },
     translate() {
       this.calls.push('translate');
     },
-  } as unknown as CanvasRenderingContext2D & { calls: string[] };
+  } as unknown as RecordingContext;
 }

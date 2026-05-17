@@ -23,6 +23,7 @@ export interface PathStep extends Cell {
 export interface EscapePiece {
   type: ShapeType;
   path: PathStep[];
+  pathTimes?: number[];
   pathIndex: number;
   timer: number;
   color: string;
@@ -786,6 +787,217 @@ interface PathStepWithHistory extends PathStep {
   path: PathStep[];
 }
 
+interface EscapePlayback {
+  path: PathStep[];
+  pathTimes: number[];
+}
+
+function getEscapeStepDelay(piece: EscapePiece, baseDelay: number): number {
+  const pathTimes = piece.pathTimes;
+  if (!pathTimes || piece.pathIndex >= piece.path.length - 1) return baseDelay;
+
+  const currentTime = pathTimes[piece.pathIndex] ?? piece.pathIndex;
+  const nextTime = pathTimes[piece.pathIndex + 1] ?? currentTime + 1;
+
+  return Math.max(1, (nextTime - currentTime) * baseDelay);
+}
+
+function createRandomizedPathTimes(path: PathStep[], rng: () => number): number[] {
+  if (path.length === 0) return [];
+
+  const pathTimes = [0];
+  let upwardBeat = 0;
+  let index = 1;
+
+  while (index < path.length) {
+    const actionStart = index;
+
+    while (index < path.length && !isUpwardPathStep(path[index - 1], path[index])) {
+      index++;
+    }
+
+    if (index > actionStart) {
+      const fractions = Array.from({ length: index - actionStart }, () => 0.15 + rng() * 0.7);
+      fractions.sort((left, right) => left - right);
+
+      for (let offset = 0; offset < fractions.length; offset++) {
+        pathTimes[actionStart + offset] = upwardBeat + fractions[offset];
+      }
+    }
+
+    if (index < path.length) {
+      upwardBeat++;
+      pathTimes[index] = upwardBeat;
+      index++;
+    }
+  }
+
+  return pathTimes;
+}
+
+function createRandomizedEscapePlayback(
+  board: Board,
+  type: ShapeType,
+  start: PathStep,
+  fallbackPath: PathStep[],
+  rng: () => number,
+): EscapePlayback {
+  const path = createInterleavedEscapePlaybackPath(board, type, start, rng) ?? fallbackPath;
+
+  return {
+    path,
+    pathTimes: createRandomizedPathTimes(path, rng),
+  };
+}
+
+function createInterleavedEscapePlaybackPath(
+  board: Board,
+  type: ShapeType,
+  start: PathStep,
+  rng: () => number,
+): PathStep[] | null {
+  if (!canOccupyEscapePlaybackStep(board, type, start)) return null;
+
+  const path: PathStep[] = [start];
+  let current = start;
+
+  for (let stepCount = 0; stepCount < 200 && !isExitPosition(type, current); stepCount++) {
+    if (shouldTryPlaybackCorrection(current, rng)) {
+      const correction = choosePlaybackCorrectionStep(board, type, current, rng);
+      if (correction) {
+        path.push(correction);
+        current = correction;
+      }
+    }
+
+    let upward = { x: current.x, y: current.y - 1, r: current.r };
+    if (!canOccupyEscapePlaybackStep(board, type, upward)) {
+      const corrected = forcePlaybackCorrectionBeforeUpward(board, type, current, rng, path);
+      if (!corrected) return null;
+      current = corrected;
+      upward = { x: current.x, y: current.y - 1, r: current.r };
+    }
+
+    if (!canOccupyEscapePlaybackStep(board, type, upward)) return null;
+
+    path.push(upward);
+    current = upward;
+  }
+
+  return isExitPosition(type, current) ? path : null;
+}
+
+function shouldTryPlaybackCorrection(current: PathStep, rng: () => number): boolean {
+  const correctionCount = getPlaybackCorrectionCount(current);
+  if (correctionCount === 0) return false;
+
+  const rowsBeforeSpawnGate = Math.max(1, current.y - SPAWN_Y);
+  if (rowsBeforeSpawnGate <= correctionCount + 2) return true;
+
+  return rng() < Math.min(0.8, 0.2 + correctionCount / rowsBeforeSpawnGate);
+}
+
+function forcePlaybackCorrectionBeforeUpward(
+  board: Board,
+  type: ShapeType,
+  start: PathStep,
+  rng: () => number,
+  path: PathStep[],
+): PathStep | null {
+  let current = start;
+
+  for (let attempt = 0; attempt < 8; attempt++) {
+    if (
+      canOccupyEscapePlaybackStep(board, type, { x: current.x, y: current.y - 1, r: current.r })
+    ) {
+      return current;
+    }
+
+    const correction = choosePlaybackCorrectionStep(board, type, current, rng);
+    if (!correction) return null;
+
+    path.push(correction);
+    current = correction;
+  }
+
+  return canOccupyEscapePlaybackStep(board, type, { x: current.x, y: current.y - 1, r: current.r })
+    ? current
+    : null;
+}
+
+function getPlaybackCorrectionCount(step: PathStep): number {
+  return Math.abs(step.x - SPAWN_X) + getRotationDistance(step.r);
+}
+
+function choosePlaybackCorrectionStep(
+  board: Board,
+  type: ShapeType,
+  current: PathStep,
+  rng: () => number,
+): PathStep | null {
+  const moves = createPlaybackCorrectionSteps(current, rng);
+
+  for (const move of moves) {
+    if (canOccupyEscapePlaybackStep(board, type, move)) return move;
+  }
+
+  return null;
+}
+
+function createPlaybackCorrectionSteps(current: PathStep, rng: () => number): PathStep[] {
+  const moves: PathStep[] = [];
+
+  if (current.x !== SPAWN_X) {
+    moves.push({
+      x: current.x + Math.sign(SPAWN_X - current.x),
+      y: current.y,
+      r: current.r,
+    });
+  }
+
+  for (const rotation of getStandardRotationSteps(current.r, rng)) {
+    moves.push({ x: current.x, y: current.y, r: rotation });
+  }
+
+  shuffleInPlace(moves, rng);
+
+  return moves;
+}
+
+function getStandardRotationSteps(rotation: Rotation, rng: () => number): Rotation[] {
+  if (rotation === 0) return [];
+  if (rotation === 2) {
+    const rotations: Rotation[] = [rotateLeft(rotation), rotateRight(rotation)];
+    if (rng() < 0.5) rotations.reverse();
+    return rotations;
+  }
+
+  const left = rotateLeft(rotation);
+  const right = rotateRight(rotation);
+
+  return getRotationDistance(left) < getRotationDistance(right) ? [left] : [right];
+}
+
+function shuffleInPlace<T>(items: T[], rng: () => number): void {
+  for (let index = items.length - 1; index > 0; index--) {
+    const swapIndex = Math.floor(rng() * (index + 1));
+    [items[index], items[swapIndex]] = [items[swapIndex], items[index]];
+  }
+}
+
+function canOccupyEscapePlaybackStep(board: Board, type: ShapeType, step: PathStep): boolean {
+  if (step.y <= SPAWN_Y && !isInSpawnColumn(step)) return false;
+
+  return getCells(type, step.x, step.y, step.r).every((cell) => {
+    if (cell.x < 0 || cell.x >= COLS || cell.y >= ROWS) return false;
+    return cell.y < 0 || board[cell.y]?.[cell.x] === 0;
+  });
+}
+
+function isUpwardPathStep(previous: PathStep, current: PathStep): boolean {
+  return previous.x === current.x && previous.r === current.r && current.y === previous.y - 1;
+}
+
 function createEscapeMoves(current: PathStep): PathStep[] {
   const moves: PathStep[] = [{ x: current.x, y: current.y - 1, r: current.r }];
 
@@ -938,10 +1150,14 @@ export class ReverseTetrisEngine {
     this.state.activePiece.timer += elapsed;
 
     while (
-      this.state.activePiece.timer >= this.state.escapeStepDelay &&
+      this.state.activePiece.timer >=
+        getEscapeStepDelay(this.state.activePiece, this.state.escapeStepDelay) &&
       this.state.activePiece.pathIndex < this.state.activePiece.path.length - 1
     ) {
-      this.state.activePiece.timer -= this.state.escapeStepDelay;
+      this.state.activePiece.timer -= getEscapeStepDelay(
+        this.state.activePiece,
+        this.state.escapeStepDelay,
+      );
       this.state.activePiece.pathIndex++;
       this.validateGhost();
     }
@@ -1086,10 +1302,18 @@ export class ReverseTetrisEngine {
       this.applyBoardShift(shift, null);
     }
 
-    const path = this.buildCarvedPiecePath(shapeType, rotation, shift);
+    const fallbackPath = this.buildCarvedPiecePath(shapeType, rotation, shift);
+    const playback = createRandomizedEscapePlayback(
+      this.state.board,
+      shapeType,
+      { x: this.state.mouseX, y: this.state.mouseY, r: rotation },
+      fallbackPath,
+      this.rng,
+    );
     const newPiece: EscapePiece = {
       type: shapeType,
-      path,
+      path: playback.path,
+      pathTimes: playback.pathTimes,
       pathIndex: 0,
       timer: 0,
       color: SHAPES[shapeType].color,
@@ -1565,6 +1789,7 @@ function clonePiece(piece: EscapePiece | null): EscapePiece | null {
   return {
     type: piece.type,
     path: piece.path.map((step) => ({ ...step })),
+    pathTimes: piece.pathTimes ? [...piece.pathTimes] : undefined,
     pathIndex: piece.pathIndex,
     timer: piece.timer,
     color: piece.color,
