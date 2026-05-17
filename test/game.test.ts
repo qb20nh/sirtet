@@ -6,7 +6,9 @@ import {
   COLS,
   createInitialBoard,
   findEscapePath,
+  findLegalCarvePath,
   getCells,
+  getSrsRotationCandidates,
   hasLegalCarvePlacement,
   hasNormalTetrisLandingCollision,
   isBoardValid,
@@ -43,6 +45,8 @@ type TestCarveState = {
   previewQueue: ShapeType[];
   queuedPiece: TestEscapePiece | null;
 };
+
+const ALL_SHAPE_TYPES: ShapeType[] = ['I', 'J', 'L', 'O', 'S', 'T', 'Z'];
 
 describe('ReverseTetrisEngine', () => {
   it('initializes the buried board with the original baseline mass', () => {
@@ -98,6 +102,8 @@ describe('ReverseTetrisEngine', () => {
     expect(engine.handleKey('q')).toBe(false);
     expect(engine.handleKey('ArrowLeft')).toBe(true);
     expect(engine.snapshot().mouseX).toBe(start.mouseX - 1);
+    expect(engine.handleKey('w')).toBe(true);
+    expect(engine.handleKey('s')).toBe(true);
     expect(engine.handleKey('z')).toBe(true);
     expect(engine.snapshot().currentRotation).toBe(rotateLeft(start.currentRotation));
     expect(engine.handleKey('x')).toBe(true);
@@ -116,10 +122,93 @@ describe('ReverseTetrisEngine', () => {
         swapped.holdShapeType ?? swapped.previewQueue[0] ?? null,
       ),
     );
+    const shiftEngine = new ReverseTetrisEngine(() => 0.5);
+    shiftEngine.start();
+    expect(shiftEngine.handleKey('Shift')).toBe(true);
     expect(shouldPreventKey('ArrowUp')).toBe(true);
     expect(shouldPreventKey('q')).toBe(false);
     expect(shouldPreventKey('Ignored', 'Space')).toBe(true);
     expect(engine.handleKey('Ignored', 'Space')).toBe(false);
+  });
+
+  it('uses guideline SRS rotation states and kick tables', () => {
+    expectCells(getCells('S', 0, 0, 0), [
+      { x: -1, y: 0 },
+      { x: 0, y: 0 },
+      { x: 0, y: -1 },
+      { x: 1, y: -1 },
+    ]);
+    expectCells(getCells('Z', 0, 0, 0), [
+      { x: -1, y: -1 },
+      { x: 0, y: -1 },
+      { x: 0, y: 0 },
+      { x: 1, y: 0 },
+    ]);
+    expectCells(getCells('S', 0, 0, 1), [
+      { x: 0, y: -1 },
+      { x: 0, y: 0 },
+      { x: 1, y: 0 },
+      { x: 1, y: 1 },
+    ]);
+    expectCells(getCells('S', 0, 0, 2), [
+      { x: -1, y: 1 },
+      { x: 0, y: 0 },
+      { x: 0, y: 1 },
+      { x: 1, y: 0 },
+    ]);
+    expectCells(getCells('S', 0, 0, 3), [
+      { x: -1, y: -1 },
+      { x: -1, y: 0 },
+      { x: 0, y: 0 },
+      { x: 0, y: 1 },
+    ]);
+    expectCells(getCells('Z', 0, 0, 1), [
+      { x: 0, y: 0 },
+      { x: 0, y: 1 },
+      { x: 1, y: -1 },
+      { x: 1, y: 0 },
+    ]);
+    expectCells(getCells('Z', 0, 0, 2), [
+      { x: -1, y: 0 },
+      { x: 0, y: 0 },
+      { x: 0, y: 1 },
+      { x: 1, y: 1 },
+    ]);
+    expectCells(getCells('Z', 0, 0, 3), [
+      { x: -1, y: 0 },
+      { x: -1, y: 1 },
+      { x: 0, y: -1 },
+      { x: 0, y: 0 },
+    ]);
+    expectCells(getCells('I', 0, 0, 2), [
+      { x: -1, y: 1 },
+      { x: 0, y: 1 },
+      { x: 1, y: 1 },
+      { x: 2, y: 1 },
+    ]);
+    expectCells(getCells('I', 0, 0, 3), [
+      { x: 1, y: -1 },
+      { x: 1, y: 0 },
+      { x: 1, y: 1 },
+      { x: 1, y: 2 },
+    ]);
+
+    expect(getSrsRotationCandidates('T', 5, 10, 0, 1)).toEqual([
+      { x: 5, y: 10, r: 1 },
+      { x: 4, y: 10, r: 1 },
+      { x: 4, y: 9, r: 1 },
+      { x: 5, y: 12, r: 1 },
+      { x: 4, y: 12, r: 1 },
+    ]);
+    expect(getSrsRotationCandidates('I', 5, 10, 0, 1)).toEqual([
+      { x: 5, y: 10, r: 1 },
+      { x: 3, y: 10, r: 1 },
+      { x: 6, y: 10, r: 1 },
+      { x: 3, y: 11, r: 1 },
+      { x: 6, y: 8, r: 1 },
+    ]);
+    expect(getSrsRotationCandidates('O', 5, 10, 0, 1)).toEqual([{ x: 5, y: 10, r: 1 }]);
+    expect(getSrsRotationCandidates('T', 5, 10, 0, 2)).toEqual([]);
   });
 
   it('carves a valid placement, scores, then fails if no next piece is queued', () => {
@@ -158,6 +247,7 @@ describe('ReverseTetrisEngine', () => {
     const first = carveRotatedEscapePiece(createTestRng(123));
     const second = carveRotatedEscapePiece(createTestRng(123));
     const different = carveRotatedEscapePiece(createTestRng(456));
+    const lateSpin = carveRotatedEscapePiece(createTestRng(2));
 
     expect(first.path).toEqual(second.path);
     expect(first.pathTimes).toEqual(second.pathTimes);
@@ -167,7 +257,7 @@ describe('ReverseTetrisEngine', () => {
     });
     expect(first.pathTimes).toHaveLength(first.path.length);
     expectPathReachesSpawnAndExits(first.type, first.path);
-    expectPathUsesSingleActionSteps(first.path);
+    expectPathUsesSingleActionSteps(first.type, first.path);
     expectNonUpwardStepBeforeSpawnGate(first.path, (step, previous) => step.x !== previous.x);
     expectNonUpwardStepBeforeSpawnGate(first.path, (step, previous) => step.r !== previous.r);
     expectUpwardStepsUseConstantBeats(first.path, first.pathTimes);
@@ -177,6 +267,7 @@ describe('ReverseTetrisEngine', () => {
     expectNonUpwardStepUsesFractionalBeat(first.path, first.pathTimes, (step, previous) => {
       return step.r !== previous.r;
     });
+    expectPlaybackStepsHaveReadableSpacing(lateSpin.pathTimes);
   });
 
   it('keeps playing in easy mode when a piece reaches the top without a queue', () => {
@@ -199,6 +290,31 @@ describe('ReverseTetrisEngine', () => {
     moveToValidPlacement(engine);
     expect(engine.handleKey('Enter')).toBe(true);
     expect(engine.snapshot().piecesCarved).toBe(2);
+  });
+
+  it('allows easy mode to end only when no current or hold-swap carve is legal', () => {
+    const engine = new ReverseTetrisEngine(() => 0.5);
+    engine.start(0, { easyMode: true });
+    const internals = engine as unknown as {
+      state: TestCarveState & { easyMode: boolean; statusReason: string };
+    };
+
+    expect(engine.endStuckEasyModeGame()).toBe(false);
+    internals.state.noLegalCarveAfterHoldSwap = true;
+    expect(engine.endStuckEasyModeGame()).toBe(true);
+    expect(internals.state.gameState).toBe('GAMEOVER');
+    expect(internals.state.statusReason).toBe('No legal carve available in easy mode.');
+    expect(internals.state.noLegalCarveAfterHoldSwap).toBe(false);
+    expect(engine.endStuckEasyModeGame()).toBe(false);
+
+    const normalEngine = new ReverseTetrisEngine(() => 0.5);
+    normalEngine.start(0, { easyMode: false });
+    const normalInternals = normalEngine as unknown as {
+      state: TestCarveState;
+    };
+    normalInternals.state.noLegalCarveAfterHoldSwap = true;
+    expect(normalEngine.endStuckEasyModeGame()).toBe(false);
+    expect(normalEngine.snapshot().gameState).toBe('PLAYING');
   });
 
   it('handles idle ticks, invalid carves, and bounded movement', () => {
@@ -430,36 +546,134 @@ describe('pure game rules', () => {
     const emptyBoard = Array.from({ length: ROWS }, () => Array(COLS).fill(0));
     const impossibleBoard = Array.from({ length: ROWS }, () => Array(COLS).fill(0));
     impossibleBoard[BASELINE][0] = 1;
+    const belowBaselineOnlyBoard = Array.from({ length: ROWS }, () => Array(COLS).fill(0));
+    belowBaselineOnlyBoard[BASELINE + 1][4] = 1;
+    const supportedBoundaryRunBoard = Array.from({ length: ROWS }, () => Array(COLS).fill(0));
+    for (let y = BASELINE - 1; y <= BASELINE + 3; y++) {
+      supportedBoundaryRunBoard[y][4] = 1;
+    }
     const diagonalOnlyBoard = createDiagonalOnlyEscapeBoard();
 
     expect(isBoardValid(board, validCells)).toBe(true);
+    expect(isBoardValid(board, [{ x: 0, y: -1 }])).toBe(true);
     expect(isBoardValid(floatingBoard, [{ x: 0, y: BASELINE }])).toBe(false);
     expect(isBoardValid(emptyBoard, [])).toBe(true);
+    expect(isBoardValid(belowBaselineOnlyBoard, [])).toBe(true);
+    expect(isBoardValid(supportedBoundaryRunBoard, [])).toBe(true);
+    expect(isBoardValid(createInitialBoard(), [])).toBe(true);
     expect(isBoardValid(impossibleBoard, [])).toBe(false);
     expect(isBoardValid(createReplayImpossibleBoard(), [])).toBe(false);
+    expect(isBoardValid(createReplayLeftPillarBoard(), [])).toBe(false);
+    const blobLeftPillarBoard = createBlobLeftPillarBoard();
+    const blobStarted = performance.now();
+    expect(isBoardValid(blobLeftPillarBoard, [])).toBe(false);
+    for (const type of ALL_SHAPE_TYPES) {
+      expect(hasLegalCarvePlacement(blobLeftPillarBoard, type)).toBe(false);
+    }
+    expect(performance.now() - blobStarted).toBeLessThan(50);
+    expect(isBoardValid(createBlobRightPileBoard(), [])).toBe(false);
+    expect(isBoardValid(createReplayRightPillarBoard(), [])).toBe(true);
+    expect(findLegalCarvePath(createReplayRightPillarSetupBoard(), 'O', 3, 18, 3)).not.toBeNull();
+    expectPathReachesSpawnAndExits(
+      'I',
+      findLegalCarvePath(createReplayRightPillarBoard(), 'I', 9, 20, 1),
+    );
+    expect(findLegalCarvePath(board, 'O', -1, BASELINE, 0)).toBeNull();
     const path = findEscapePath(board, 'O', 0, BASELINE - 3, 0);
     expectPathReachesSpawnAndExits('O', path);
-    expectPathUsesSingleActionSteps(path);
+    expectPathUsesSingleActionSteps('O', path);
     expect(path?.some((step) => step.x > 0 && step.y > VISIBLE_TOP)).toBe(true);
     expect(path?.find((step) => step.y === VISIBLE_TOP)).toEqual({
       x: SPAWN_X,
       y: VISIBLE_TOP,
       r: 0,
     });
+    const srsSpinBoard = Array.from({ length: ROWS }, () => Array(COLS).fill(0));
+    const srsSpinPath = findEscapePath(srsSpinBoard, 'T', 0, VISIBLE_TOP + 1, 1);
+    expectPathReachesSpawnAndExits('T', srsSpinPath);
+    expectPathUsesSingleActionSteps('T', srsSpinPath);
+    expect(srsSpinPath?.[1]).toEqual({ x: 1, y: VISIBLE_TOP + 1, r: 0 });
+    const srsSpinSteps = srsSpinPath ?? [];
+    expect(
+      srsSpinSteps.some((step, index) => {
+        if (index === 0) return false;
+        const previous = srsSpinSteps[index - 1];
+        return step.r !== previous.r && (step.x !== previous.x || step.y !== previous.y);
+      }),
+    ).toBe(true);
     const topPath = findEscapePath(board, 'O', SPAWN_X - 1, VISIBLE_TOP, 0);
     expect(topPath?.[1]).toEqual({ x: SPAWN_X, y: VISIBLE_TOP, r: 0 });
-    expectPathUsesSingleActionSteps(topPath);
+    expectPathUsesSingleActionSteps('O', topPath);
     const topFinalStep = topPath?.at(-1);
     expect(topFinalStep ? isFullyAboveBoard('O', topFinalStep) : false).toBe(true);
     expect(findEscapePath(diagonalOnlyBoard, 'O', 0, BASELINE - 1, 0)).toBeNull();
     expect(findEscapePath(createBlockedBoard(), 'O', 0, BASELINE - 3, 0)).toBeNull();
+    expectSZPiecesCannotEscapeThroughSingleCellGap();
+    const readyEngine = new ReverseTetrisEngine();
+    expect(readyEngine.validateGhost()).toBe(false);
     expect(rotateRight(3)).toBe(0);
     expect(rotateLeft(0)).toBe(3);
+  });
+
+  it('keeps wall-pillar availability refresh inside a two-frame budget', () => {
+    const impossible = refreshAvailabilityForBoard(createBlobLeftPillarBoard(), 'L', 'Z');
+    expect(impossible.currentShapeHasLegalCarve).toBe(false);
+    expect(impossible.holdSwapShapeHasLegalCarve).toBe(false);
+    expect(impossible.noLegalCarveAfterHoldSwap).toBe(true);
+    expect(impossible.elapsedMs).toBeLessThan(120);
+
+    const impossibleRight = refreshAvailabilityForBoard(createBlobRightPileBoard(), 'J', 'Z');
+    expect(impossibleRight.currentShapeHasLegalCarve).toBe(false);
+    expect(impossibleRight.holdSwapShapeHasLegalCarve).toBe(false);
+    expect(impossibleRight.noLegalCarveAfterHoldSwap).toBe(true);
+    expect(impossibleRight.elapsedMs).toBeLessThan(120);
+
+    const valid = refreshAvailabilityForBoard(createReplayRightPillarBoard(), 'I', 'O');
+    expect(valid.currentShapeHasLegalCarve).toBe(true);
+    expect(valid.holdSwapShapeHasLegalCarve).toBe(true);
+    expect(valid.noLegalCarveAfterHoldSwap).toBe(false);
+    expect(valid.elapsedMs).toBeLessThan(120);
   });
 });
 
 function createBlockedBoard() {
   return Array.from({ length: ROWS }, () => Array(COLS).fill(1));
+}
+
+function expectSZPiecesCannotEscapeThroughSingleCellGap(): void {
+  const barrierY = VISIBLE_TOP + 8;
+  const gapX = SPAWN_X;
+  const board = Array.from({ length: ROWS }, () => Array(COLS).fill(0));
+  let checkedStarts = 0;
+
+  for (let x = 0; x < COLS; x++) {
+    if (x !== gapX) {
+      board[barrierY][x] = 1;
+    }
+  }
+
+  for (const shape of ['S', 'Z'] as ShapeType[]) {
+    for (let rotationIndex = 0; rotationIndex < 4; rotationIndex++) {
+      const rotation = rotationIndex as Rotation;
+
+      for (let y = barrierY + 1; y < barrierY + 8; y++) {
+        for (let x = 0; x < COLS; x++) {
+          const cells = getCells(shape, x, y, rotation);
+          if (
+            cells.some((cell) => cell.x < 0 || cell.x >= COLS || cell.y < 0 || cell.y >= ROWS) ||
+            cells.some((cell) => cell.y <= barrierY)
+          ) {
+            continue;
+          }
+
+          checkedStarts++;
+          expect(findEscapePath(board, shape, x, y, rotation)).toBeNull();
+        }
+      }
+    }
+  }
+
+  expect(checkedStarts).toBeGreaterThan(0);
 }
 
 function createDiagonalOnlyEscapeBoard() {
@@ -527,6 +741,161 @@ function createReplayImpossibleBoard() {
   ].map((row) => row.split('').map((cell) => (cell === '#' ? 1 : 0)));
 }
 
+function createReplayLeftPillarBoard() {
+  return [
+    '..........',
+    '..........',
+    '..........',
+    '..........',
+    '..........',
+    '..........',
+    '..........',
+    '..........',
+    '..........',
+    '..........',
+    '..........',
+    '.#........',
+    '##........',
+    '##........',
+    '##........',
+    '###.......',
+    '#.#.......',
+    '#.........',
+    '#.........',
+    '#.......##',
+    '##..##...#',
+    '##.###...#',
+    '##########',
+    '##########',
+    '##########',
+    '##########',
+  ].map((row) => row.split('').map((cell) => (cell === '#' ? 1 : 0)));
+}
+
+function createBlobLeftPillarBoard() {
+  return [
+    '..........',
+    '..........',
+    '..........',
+    '..........',
+    '..........',
+    '..........',
+    '..........',
+    '..........',
+    '..........',
+    '..........',
+    '..........',
+    '#.........',
+    '#.........',
+    '##........',
+    '##........',
+    '#.........',
+    '##........',
+    '#.........',
+    '#.........',
+    '###....#..',
+    '###....###',
+    '###.######',
+    '##########',
+    '##########',
+    '##########',
+    '##########',
+  ].map((row) => row.split('').map((cell) => (cell === '#' ? 1 : 0)));
+}
+
+function createBlobRightPileBoard() {
+  return [
+    '..........',
+    '..........',
+    '..........',
+    '..........',
+    '..........',
+    '..........',
+    '..........',
+    '..........',
+    '..........',
+    '..........',
+    '#........#',
+    '#........#',
+    '#.......##',
+    '##.......#',
+    '##.......#',
+    '#........#',
+    '#.......##',
+    '#........#',
+    '#........#',
+    '#.....#..#',
+    '####..##.#',
+    '####..####',
+    '##########',
+    '##########',
+    '##########',
+    '##########',
+  ].map((row) => row.split('').map((cell) => (cell === '#' ? 1 : 0)));
+}
+
+function createReplayRightPillarBoard() {
+  return [
+    '..........',
+    '..........',
+    '..........',
+    '..........',
+    '..........',
+    '..........',
+    '..........',
+    '..........',
+    '..........',
+    '..........',
+    '..........',
+    '..........',
+    '..........',
+    '..........',
+    '..........',
+    '..........',
+    '..........',
+    '..........',
+    '###..##...',
+    '###..##..#',
+    '#######..#',
+    '########.#',
+    '##########',
+    '##########',
+    '##########',
+    '##########',
+  ].map((row) => row.split('').map((cell) => (cell === '#' ? 1 : 0)));
+}
+
+function createReplayRightPillarSetupBoard() {
+  return [
+    '..........',
+    '..........',
+    '..........',
+    '..........',
+    '..........',
+    '..........',
+    '..........',
+    '..........',
+    '..........',
+    '..........',
+    '..........',
+    '..........',
+    '..........',
+    '..........',
+    '..........',
+    '..........',
+    '..........',
+    '..........',
+    '#######...',
+    '#######..#',
+    '#######..#',
+    '########.#',
+    '##########',
+    '##########',
+    '##########',
+    '##########',
+  ].map((row) => row.split('').map((cell) => (cell === '#' ? 1 : 0)));
+}
+
 function expectPathReachesSpawnAndExits(
   type: ShapeType,
   path: PathStep[] | null | undefined,
@@ -538,24 +907,37 @@ function expectPathReachesSpawnAndExits(
   expect(finalStep ? isFullyAboveBoard(type, finalStep) : false).toBe(true);
 }
 
-function expectPathUsesSingleActionSteps(path: PathStep[] | null | undefined): void {
+function expectCells(
+  actual: Array<{ x: number; y: number }>,
+  expected: Array<{ x: number; y: number }>,
+) {
+  expect(sortCells(actual)).toEqual(sortCells(expected));
+}
+
+function sortCells(cells: Array<{ x: number; y: number }>): Array<{ x: number; y: number }> {
+  return [...cells].sort((left, right) => left.y - right.y || left.x - right.x);
+}
+
+function expectPathUsesSingleActionSteps(
+  type: ShapeType,
+  path: PathStep[] | null | undefined,
+): void {
   expect(path).toBeDefined();
 
   const steps = path ?? [];
   for (let index = 1; index < steps.length; index++) {
     const previous = steps[index - 1];
     const current = steps[index];
-    const changedAxes =
-      Number(current.x !== previous.x) +
-      Number(current.y !== previous.y) +
-      Number(current.r !== previous.r);
 
-    expect(changedAxes).toBe(1);
-
-    if (current.x !== previous.x) {
+    if (current.r !== previous.r) {
+      expect(
+        getSrsRotationCandidates(type, previous.x, previous.y, previous.r, current.r),
+      ).toContainEqual(current);
+    } else if (current.x !== previous.x) {
+      expect(current.y).toBe(previous.y);
       expect(Math.abs(current.x - previous.x)).toBe(1);
-    }
-    if (current.y !== previous.y) {
+    } else {
+      expect(current.x).toBe(previous.x);
       expect(current.y).toBe(previous.y - 1);
     }
   }
@@ -571,7 +953,11 @@ function expectNonUpwardStepBeforeSpawnGate(
   const earlyNonUpwardStep = steps.find((step, index) => {
     if (index === 0) return false;
     const previous = steps[index - 1];
-    return step.y === previous.y && step.y > VISIBLE_TOP + 4 && predicate(step, previous);
+    return (
+      !isPlainUpwardPathStep(previous, step) &&
+      step.y > VISIBLE_TOP + 4 &&
+      predicate(step, previous)
+    );
   });
 
   expect(earlyNonUpwardStep).toBeDefined();
@@ -583,12 +969,22 @@ function expectUpwardStepsUseConstantBeats(
 ): void {
   expect(pathTimes).toBeDefined();
 
-  let upwardBeat = 0;
+  let previousUpwardTime = 0;
   for (let index = 1; index < path.length; index++) {
-    if (path[index].y === path[index - 1].y - 1) {
-      upwardBeat++;
-      expect(pathTimes?.[index]).toBe(upwardBeat);
+    if (isPlainUpwardPathStep(path[index - 1], path[index])) {
+      const upwardTime = pathTimes?.[index] ?? 0;
+      expect(Number.isInteger(upwardTime)).toBe(true);
+      expect(upwardTime - previousUpwardTime).toBeGreaterThanOrEqual(1);
+      previousUpwardTime = upwardTime;
     }
+  }
+}
+
+function expectPlaybackStepsHaveReadableSpacing(pathTimes: number[] | undefined): void {
+  expect(pathTimes).toBeDefined();
+
+  for (let index = 1; index < (pathTimes?.length ?? 0); index++) {
+    expect((pathTimes?.[index] ?? 0) - (pathTimes?.[index - 1] ?? 0)).toBeGreaterThanOrEqual(0.35);
   }
 }
 
@@ -601,11 +997,15 @@ function expectNonUpwardStepUsesFractionalBeat(
 
   const timingStep = path.findIndex((step, index) => {
     if (index === 0) return false;
-    return step.y === path[index - 1].y && predicate(step, path[index - 1]);
+    return !isPlainUpwardPathStep(path[index - 1], step) && predicate(step, path[index - 1]);
   });
 
   expect(timingStep).toBeGreaterThan(0);
   expect(Number.isInteger(pathTimes?.[timingStep] ?? 0)).toBe(false);
+}
+
+function isPlainUpwardPathStep(previous: PathStep, current: PathStep): boolean {
+  return previous.x === current.x && previous.r === current.r && current.y === previous.y - 1;
 }
 
 function isFullyAboveBoard(type: ShapeType, step: PathStep): boolean {
@@ -622,8 +1022,8 @@ function carveRotatedEscapePiece(rng: () => number) {
   };
 
   primeCarveState(internals.state, createInitialBoard(), BASELINE - 3);
-  internals.state.currentRotation = 1;
-  internals.state.ghostPath = findEscapePath(internals.state.board, 'O', 0, BASELINE - 3, 1);
+  internals.state.currentRotation = 2;
+  internals.state.ghostPath = findEscapePath(internals.state.board, 'O', 0, BASELINE - 3, 2);
   internals.state.ghostValid = Boolean(internals.state.ghostPath);
 
   expect(internals.validateGhost()).toBe(true);
@@ -644,6 +1044,36 @@ function createTestRng(seed: number): () => number {
     value = Math.imul(value ^ (value >>> 15), value | 1);
     value ^= value + Math.imul(value ^ (value >>> 7), value | 61);
     return ((value ^ (value >>> 14)) >>> 0) / 0x100000000;
+  };
+}
+
+function refreshAvailabilityForBoard(
+  board: number[][],
+  currentShapeType: ShapeType,
+  holdShapeType: ShapeType,
+) {
+  const engine = new ReverseTetrisEngine(() => 0.5);
+  engine.start();
+  const internals = engine as unknown as {
+    state: TestCarveState;
+    refreshCarveAvailability: () => void;
+  };
+  internals.state.activePiece = null;
+  internals.state.board = board;
+  internals.state.currentShapeType = currentShapeType;
+  internals.state.gameState = 'PLAYING';
+  internals.state.holdShapeType = holdShapeType;
+  internals.state.previewQueue = ['S', 'J'];
+  internals.state.queuedPiece = null;
+
+  const started = performance.now();
+  internals.refreshCarveAvailability();
+
+  return {
+    currentShapeHasLegalCarve: internals.state.currentShapeHasLegalCarve,
+    elapsedMs: performance.now() - started,
+    holdSwapShapeHasLegalCarve: internals.state.holdSwapShapeHasLegalCarve,
+    noLegalCarveAfterHoldSwap: internals.state.noLegalCarveAfterHoldSwap,
   };
 }
 

@@ -335,6 +335,14 @@ button {
   color: #f8fafc;
 }
 
+.replay-button + .replay-button {
+  margin-top: 8px;
+}
+
+.end-game-button:hover {
+  border-color: #f97316;
+}
+
 @keyframes soft-pulse {
   0%,
   100% {

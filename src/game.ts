@@ -5,6 +5,7 @@ export const BASELINE = 21;
 export const BLOCK_SIZE = 30;
 export const SPAWN_X = Math.floor(COLS / 2) - 1;
 const SPAWN_Y = VISIBLE_TOP;
+const PATH_AWARE_PACK_TOP = BASELINE - 6;
 
 export type ShapeType = 'I' | 'J' | 'L' | 'O' | 'S' | 'T' | 'Z';
 export type Rotation = 0 | 1 | 2 | 3;
@@ -56,16 +57,16 @@ export const SHAPES: Record<ShapeType, ShapeDefinition> = {
         [0, 2],
       ],
       [
-        [0, 0],
-        [-1, 0],
-        [1, 0],
-        [2, 0],
+        [-1, 1],
+        [0, 1],
+        [1, 1],
+        [2, 1],
       ],
       [
-        [0, 0],
-        [0, -1],
-        [0, 1],
-        [0, 2],
+        [1, -1],
+        [1, 0],
+        [1, 1],
+        [1, 2],
       ],
     ],
   },
@@ -161,27 +162,27 @@ export const SHAPES: Record<ShapeType, ShapeDefinition> = {
     coords: [
       [
         [0, 0],
-        [1, 0],
+        [-1, 0],
         [0, -1],
-        [-1, -1],
-      ],
-      [
-        [0, 0],
-        [0, 1],
-        [1, 0],
         [1, -1],
       ],
       [
         [0, 0],
-        [1, 0],
         [0, -1],
-        [-1, -1],
+        [1, 0],
+        [1, 1],
+      ],
+      [
+        [0, 0],
+        [1, 0],
+        [0, 1],
+        [-1, 1],
       ],
       [
         [0, 0],
         [0, 1],
-        [1, 0],
-        [1, -1],
+        [-1, 0],
+        [-1, -1],
       ],
     ],
   },
@@ -219,30 +220,148 @@ export const SHAPES: Record<ShapeType, ShapeDefinition> = {
     coords: [
       [
         [0, 0],
-        [-1, 0],
+        [1, 0],
         [0, -1],
+        [-1, -1],
+      ],
+      [
+        [0, 0],
+        [0, 1],
+        [1, 0],
         [1, -1],
       ],
       [
         [0, 0],
-        [0, -1],
-        [1, 0],
-        [1, 1],
-      ],
-      [
-        [0, 0],
         [-1, 0],
-        [0, -1],
-        [1, -1],
+        [0, 1],
+        [1, 1],
       ],
       [
         [0, 0],
         [0, -1],
-        [1, 0],
-        [1, 1],
+        [-1, 0],
+        [-1, 1],
       ],
     ],
   },
+};
+
+const JLSTZ_SRS_KICKS: Record<string, readonly (readonly [number, number])[]> = {
+  '0>1': [
+    [0, 0],
+    [-1, 0],
+    [-1, -1],
+    [0, 2],
+    [-1, 2],
+  ],
+  '1>0': [
+    [0, 0],
+    [1, 0],
+    [1, 1],
+    [0, -2],
+    [1, -2],
+  ],
+  '1>2': [
+    [0, 0],
+    [1, 0],
+    [1, 1],
+    [0, -2],
+    [1, -2],
+  ],
+  '2>1': [
+    [0, 0],
+    [-1, 0],
+    [-1, -1],
+    [0, 2],
+    [-1, 2],
+  ],
+  '2>3': [
+    [0, 0],
+    [1, 0],
+    [1, -1],
+    [0, 2],
+    [1, 2],
+  ],
+  '3>2': [
+    [0, 0],
+    [-1, 0],
+    [-1, 1],
+    [0, -2],
+    [-1, -2],
+  ],
+  '3>0': [
+    [0, 0],
+    [-1, 0],
+    [-1, 1],
+    [0, -2],
+    [-1, -2],
+  ],
+  '0>3': [
+    [0, 0],
+    [1, 0],
+    [1, -1],
+    [0, 2],
+    [1, 2],
+  ],
+};
+
+const I_SRS_KICKS: Record<string, readonly (readonly [number, number])[]> = {
+  '0>1': [
+    [0, 0],
+    [-2, 0],
+    [1, 0],
+    [-2, 1],
+    [1, -2],
+  ],
+  '1>0': [
+    [0, 0],
+    [2, 0],
+    [-1, 0],
+    [2, -1],
+    [-1, 2],
+  ],
+  '1>2': [
+    [0, 0],
+    [-1, 0],
+    [2, 0],
+    [-1, -2],
+    [2, 1],
+  ],
+  '2>1': [
+    [0, 0],
+    [1, 0],
+    [-2, 0],
+    [1, 2],
+    [-2, -1],
+  ],
+  '2>3': [
+    [0, 0],
+    [2, 0],
+    [-1, 0],
+    [2, -1],
+    [-1, 2],
+  ],
+  '3>2': [
+    [0, 0],
+    [-2, 0],
+    [1, 0],
+    [-2, 1],
+    [1, -2],
+  ],
+  '3>0': [
+    [0, 0],
+    [1, 0],
+    [-2, 0],
+    [1, 2],
+    [-2, -1],
+  ],
+  '0>3': [
+    [0, 0],
+    [-1, 0],
+    [2, 0],
+    [-1, -2],
+    [2, 1],
+  ],
 };
 
 const SHAPE_KEYS: ShapeType[] = ['I', 'J', 'L', 'O', 'S', 'T', 'Z'];
@@ -306,6 +425,7 @@ interface CarvePlacement {
   rotation: Rotation;
   cells: Cell[];
   cellIndexes: number[];
+  cellKey: string;
   supportIndexes: number[];
   hasFloorSupport: boolean;
 }
@@ -353,6 +473,39 @@ export function getCells(
     x: x + cx,
     y: y + cy,
   }));
+}
+
+export function getSrsRotationCandidates(
+  type: ShapeType,
+  x: number,
+  y: number,
+  from: Rotation,
+  to: Rotation,
+): PathStep[] {
+  if (!isQuarterRotation(from, to)) return [];
+
+  return getSrsKickOffsets(type, from, to).map(([dx, dy]) => ({
+    x: x + dx,
+    y: y + dy,
+    r: to,
+  }));
+}
+
+function getSrsKickOffsets(
+  type: ShapeType,
+  from: Rotation,
+  to: Rotation,
+): readonly (readonly [number, number])[] {
+  if (type === 'O') return [[0, 0]];
+
+  const key = `${from}>${to}`;
+  const kicks = type === 'I' ? I_SRS_KICKS[key] : JLSTZ_SRS_KICKS[key];
+
+  return kicks ?? [];
+}
+
+function isQuarterRotation(from: Rotation, to: Rotation): boolean {
+  return to === rotateLeft(from) || to === rotateRight(from);
 }
 
 export function isFullyInsideFilled(board: Board, cells: Cell[]): boolean {
@@ -455,28 +608,11 @@ export function findEscapePath(
       return current.path;
     }
 
-    const moves = createEscapeMoves(current);
+    const moves = createEscapeMoves(board, type, startCells, current);
 
     for (const move of moves) {
-      if (move.y <= SPAWN_Y && !isInSpawnColumn(move)) continue;
-
       const key = `${move.x},${move.y},${move.r}`;
       if (visited.has(key)) continue;
-
-      const moveCells = getCells(type, move.x, move.y, move.r);
-      const blockedByBounds = moveCells.some(
-        (cell) => cell.x < 0 || cell.x >= COLS || cell.y >= ROWS,
-      );
-      if (blockedByBounds) continue;
-
-      const blockedByBoard = moveCells.some((cell) => {
-        const isInside = cell.y >= 0;
-        const isSelf = startCells.some(
-          (startCell) => startCell.x === cell.x && startCell.y === cell.y,
-        );
-        return isInside && board[cell.y][cell.x] === 1 && !isSelf;
-      });
-      if (blockedByBoard) continue;
 
       visited.add(key);
       queue.push({
@@ -487,6 +623,97 @@ export function findEscapePath(
   }
 
   return null;
+}
+
+function hasEscapePath(
+  board: Board,
+  type: ShapeType,
+  startX: number,
+  startY: number,
+  startR: Rotation,
+): boolean {
+  const rowBits = createRowBits(board);
+  const startRowBits = new Uint16Array(ROWS);
+  for (const cell of getCells(type, startX, startY, startR)) {
+    if (cell.y >= 0 && cell.y < ROWS) {
+      startRowBits[cell.y] |= 1 << cell.x;
+    }
+  }
+
+  const queue: PathStep[] = [{ x: startX, y: startY, r: startR }];
+  const visited = new Set([packEscapeState(startX, startY, startR)]);
+  let cursor = 0;
+  let iterations = 0;
+
+  while (cursor < queue.length && iterations < 2000) {
+    iterations++;
+    const current = queue[cursor++];
+    if (isExitPositionFast(type, current)) return true;
+
+    const upward = { x: current.x, y: current.y - 1, r: current.r };
+    if (canOccupyEscapePathStepFast(rowBits, startRowBits, type, upward)) {
+      const key = packEscapeState(upward.x, upward.y, upward.r);
+      if (!visited.has(key)) {
+        visited.add(key);
+        queue.push(upward);
+      }
+    }
+
+    for (const dx of getHorizontalDeltas(current.x)) {
+      if (dx === 0) continue;
+      const horizontal = { x: current.x + dx, y: current.y, r: current.r };
+      if (!canOccupyEscapePathStepFast(rowBits, startRowBits, type, horizontal)) continue;
+      const key = packEscapeState(horizontal.x, horizontal.y, horizontal.r);
+      if (visited.has(key)) continue;
+
+      visited.add(key);
+      queue.push(horizontal);
+    }
+
+    for (const rotation of getRotationOptions(current.r)) {
+      for (const [dx, dy] of getSrsKickOffsets(type, current.r, rotation)) {
+        const candidate = { x: current.x + dx, y: current.y + dy, r: rotation };
+        if (!canOccupyEscapePathStepFast(rowBits, startRowBits, type, candidate)) continue;
+        const key = packEscapeState(candidate.x, candidate.y, candidate.r);
+        if (!visited.has(key)) {
+          visited.add(key);
+          queue.push(candidate);
+        }
+        break;
+      }
+    }
+  }
+
+  return false;
+}
+
+function packEscapeState(x: number, y: number, rotation: Rotation): number {
+  return (((y + 8) * (COLS + 8) + x + 4) << 2) | rotation;
+}
+
+function isExitPositionFast(type: ShapeType, step: PathStep): boolean {
+  return isInSpawnColumn(step) && SHAPES[type].coords[step.r].every(([, dy]) => step.y + dy < 0);
+}
+
+function canOccupyEscapePathStepFast(
+  rowBits: number[],
+  startRowBits: Uint16Array,
+  type: ShapeType,
+  step: PathStep,
+): boolean {
+  if (step.y <= SPAWN_Y && !isInSpawnColumn(step)) return false;
+
+  for (const [dx, dy] of SHAPES[type].coords[step.r]) {
+    const x = step.x + dx;
+    const y = step.y + dy;
+    if (x < 0 || x >= COLS || y >= ROWS) return false;
+    if (y < 0) continue;
+
+    const bit = 1 << x;
+    if ((rowBits[y] & bit) !== 0 && (startRowBits[y] & bit) === 0) return false;
+  }
+
+  return true;
 }
 
 export function findLegalCarvePath(
@@ -540,6 +767,7 @@ function createPlacementMetadata(): PlacementMetadata {
           }
 
           const cellIndexes = cells.map(cellIndex);
+          const cellKey = [...cellIndexes].sort((left, right) => left - right).join('_');
           const supportIndexes = new Set<number>();
           let hasFloorSupport = false;
 
@@ -565,6 +793,7 @@ function createPlacementMetadata(): PlacementMetadata {
             rotation,
             cells,
             cellIndexes,
+            cellKey,
             supportIndexes: [...supportIndexes],
             hasFloorSupport,
           };
@@ -639,6 +868,10 @@ function hasLegalCarvePlacementInIndex(
 
   const cached = legalityIndex.shapeHasLegalCarve.get(type);
   if (cached !== undefined) return cached;
+  if (!isPreparedBoardValidInIndex(board, legalityIndex)) {
+    legalityIndex.shapeHasLegalCarve.set(type, false);
+    return false;
+  }
 
   for (const placementId of PLACEMENT_METADATA.idsByShape.get(type) ?? []) {
     if (getLegalPathForPlacement(board, legalityIndex, placementId)) {
@@ -672,6 +905,7 @@ function getLegalPathForPlacement(
   let escapePath: PathStep[] | null = null;
 
   if (
+    isPreparedBoardValidInIndex(board, legalityIndex) &&
     legalityIndex.filledCountByPlacement[placementId] === placement.cellIndexes.length &&
     legalityIndex.supportCountByPlacement[placementId] > 0
   ) {
@@ -696,12 +930,16 @@ function isPlacementBoardValid(
   placement: CarvePlacement,
 ): boolean {
   const simBoard = createBoardAfterCarve(board, placement.cells);
-  const resultMask = boardToMask(simBoard);
-  const cached = legalityIndex.packValidityByResultMask.get(resultMask);
+  return isPreparedBoardValidInIndex(simBoard, legalityIndex);
+}
+
+function isPreparedBoardValidInIndex(board: Board, legalityIndex: CarveLegalityIndex): boolean {
+  const boardMask = boardToMask(board);
+  const cached = legalityIndex.packValidityByResultMask.get(boardMask);
   if (cached !== undefined) return cached;
 
-  const valid = isPreparedBoardValid(simBoard);
-  legalityIndex.packValidityByResultMask.set(resultMask, valid);
+  const valid = isPreparedBoardValid(board);
+  legalityIndex.packValidityByResultMask.set(boardMask, valid);
   return valid;
 }
 
@@ -792,6 +1030,8 @@ interface EscapePlayback {
   pathTimes: number[];
 }
 
+const MIN_PLAYBACK_ACTION_BEATS = 0.35;
+
 function getEscapeStepDelay(piece: EscapePiece, baseDelay: number): number {
   const pathTimes = piece.pathTimes;
   if (!pathTimes || piece.pathIndex >= piece.path.length - 1) return baseDelay;
@@ -817,12 +1057,21 @@ function createRandomizedPathTimes(path: PathStep[], rng: () => number): number[
     }
 
     if (index > actionStart) {
-      const fractions = Array.from({ length: index - actionStart }, () => 0.15 + rng() * 0.7);
-      fractions.sort((left, right) => left - right);
+      const actionCount = index - actionStart;
+      const nextUpwardBeat =
+        upwardBeat + Math.max(1, Math.ceil((actionCount + 1) * MIN_PLAYBACK_ACTION_BEATS));
+      let previousActionTime = upwardBeat;
 
-      for (let offset = 0; offset < fractions.length; offset++) {
-        pathTimes[actionStart + offset] = upwardBeat + fractions[offset];
+      for (let offset = 0; offset < actionCount; offset++) {
+        const remainingActions = actionCount - offset - 1;
+        const earliest = previousActionTime + MIN_PLAYBACK_ACTION_BEATS;
+        const latest = nextUpwardBeat - MIN_PLAYBACK_ACTION_BEATS * (remainingActions + 1);
+        const actionTime = earliest + (latest - earliest) * rng();
+        pathTimes[actionStart + offset] = actionTime;
+        previousActionTime = actionTime;
       }
+
+      upwardBeat = nextUpwardBeat - 1;
     }
 
     if (index < path.length) {
@@ -935,33 +1184,41 @@ function choosePlaybackCorrectionStep(
   current: PathStep,
   rng: () => number,
 ): PathStep | null {
-  const moves = createPlaybackCorrectionSteps(current, rng);
+  const moveGroups = createPlaybackCorrectionStepGroups(type, current, rng);
 
-  for (const move of moves) {
-    if (canOccupyEscapePlaybackStep(board, type, move)) return move;
+  for (const moves of moveGroups) {
+    for (const move of moves) {
+      if (canOccupyEscapePlaybackStep(board, type, move)) return move;
+    }
   }
 
   return null;
 }
 
-function createPlaybackCorrectionSteps(current: PathStep, rng: () => number): PathStep[] {
-  const moves: PathStep[] = [];
+function createPlaybackCorrectionStepGroups(
+  type: ShapeType,
+  current: PathStep,
+  rng: () => number,
+): PathStep[][] {
+  const moveGroups: PathStep[][] = [];
 
   if (current.x !== SPAWN_X) {
-    moves.push({
-      x: current.x + Math.sign(SPAWN_X - current.x),
-      y: current.y,
-      r: current.r,
-    });
+    moveGroups.push([
+      {
+        x: current.x + Math.sign(SPAWN_X - current.x),
+        y: current.y,
+        r: current.r,
+      },
+    ]);
   }
 
   for (const rotation of getStandardRotationSteps(current.r, rng)) {
-    moves.push({ x: current.x, y: current.y, r: rotation });
+    moveGroups.push(getSrsRotationCandidates(type, current.x, current.y, current.r, rotation));
   }
 
-  shuffleInPlace(moves, rng);
+  shuffleInPlace(moveGroups, rng);
 
-  return moves;
+  return moveGroups;
 }
 
 function getStandardRotationSteps(rotation: Rotation, rng: () => number): Rotation[] {
@@ -998,22 +1255,59 @@ function isUpwardPathStep(previous: PathStep, current: PathStep): boolean {
   return previous.x === current.x && previous.r === current.r && current.y === previous.y - 1;
 }
 
-function createEscapeMoves(current: PathStep): PathStep[] {
-  const moves: PathStep[] = [{ x: current.x, y: current.y - 1, r: current.r }];
+function createEscapeMoves(
+  board: Board,
+  type: ShapeType,
+  startCells: Cell[],
+  current: PathStep,
+): PathStep[] {
+  const moves: PathStep[] = [];
+  const upward = { x: current.x, y: current.y - 1, r: current.r };
+  if (canOccupyEscapePathStep(board, type, startCells, upward)) {
+    moves.push(upward);
+  }
 
   for (const dx of getHorizontalDeltas(current.x)) {
     if (dx !== 0) {
-      moves.push({ x: current.x + dx, y: current.y, r: current.r });
+      const horizontal = { x: current.x + dx, y: current.y, r: current.r };
+      if (canOccupyEscapePathStep(board, type, startCells, horizontal)) {
+        moves.push(horizontal);
+      }
     }
   }
 
   for (const rotation of getRotationOptions(current.r)) {
-    if (rotation !== current.r) {
-      moves.push({ x: current.x, y: current.y, r: rotation });
+    for (const candidate of getSrsRotationCandidates(
+      type,
+      current.x,
+      current.y,
+      current.r,
+      rotation,
+    )) {
+      if (canOccupyEscapePathStep(board, type, startCells, candidate)) {
+        moves.push(candidate);
+        break;
+      }
     }
   }
 
   return moves;
+}
+
+function canOccupyEscapePathStep(
+  board: Board,
+  type: ShapeType,
+  startCells: Cell[],
+  step: PathStep,
+): boolean {
+  if (step.y <= SPAWN_Y && !isInSpawnColumn(step)) return false;
+
+  return getCells(type, step.x, step.y, step.r).every((cell) => {
+    if (cell.x < 0 || cell.x >= COLS || cell.y >= ROWS) return false;
+    const isSelf = startCells.some((startCell) => startCell.x === cell.x && startCell.y === cell.y);
+
+    return cell.y < 0 || board[cell.y][cell.x] === 0 || isSelf;
+  });
 }
 
 function getHorizontalDeltas(x: number): number[] {
@@ -1135,6 +1429,19 @@ export class ReverseTetrisEngine {
     return moved;
   }
 
+  endStuckEasyModeGame(): boolean {
+    if (
+      this.state.gameState !== 'PLAYING' ||
+      !this.state.easyMode ||
+      !this.state.noLegalCarveAfterHoldSwap
+    ) {
+      return false;
+    }
+
+    this.endGame('No legal carve available in easy mode.');
+    return true;
+  }
+
   tick(timestamp: number): boolean {
     if (this.state.gameState !== 'PLAYING') {
       return false;
@@ -1222,29 +1529,25 @@ export class ReverseTetrisEngine {
   }
 
   private tryRotation(nextRotation: Rotation): boolean {
-    const kicks = [
-      [0, 0],
-      [-1, 0],
-      [1, 0],
-      [0, -1],
-      [0, 1],
-      [-2, 0],
-      [2, 0],
-      [0, -2],
-      [0, 2],
-    ];
+    if (!this.state.currentShapeType) return false;
 
-    for (const [x, y] of kicks) {
+    for (const candidate of getSrsRotationCandidates(
+      this.state.currentShapeType,
+      this.state.mouseX,
+      this.state.mouseY,
+      this.state.currentRotation,
+      nextRotation,
+    )) {
       if (
         !isCursorOutOfVisibleBounds(
           this.state.currentShapeType,
-          this.state.mouseX + x,
-          this.state.mouseY + y,
+          candidate.x,
+          candidate.y,
           nextRotation,
         )
       ) {
-        this.state.mouseX += x;
-        this.state.mouseY += y;
+        this.state.mouseX = candidate.x;
+        this.state.mouseY = candidate.y;
         this.state.currentRotation = nextRotation;
         return true;
       }
@@ -1512,13 +1815,15 @@ function createReadyState(): EngineState {
 }
 
 function hasFloatingBlocks(board: Board): boolean {
-  let totalSolid = 0;
+  let totalTargetSolid = 0;
   const queue: Cell[] = [];
 
   for (let y = 0; y < ROWS; y++) {
     for (let x = 0; x < COLS; x++) {
       if (board[y][x] === 1) {
-        totalSolid++;
+        if (isTargetBlockRow(y)) {
+          totalTargetSolid++;
+        }
         if (y >= BASELINE) {
           queue.push({ x, y });
         }
@@ -1526,18 +1831,20 @@ function hasFloatingBlocks(board: Board): boolean {
     }
   }
 
-  if (totalSolid === 0) {
+  if (totalTargetSolid === 0) {
     return false;
   }
 
   const visited = new Set<string>();
-  let connectedCount = 0;
+  let connectedTargetCount = 0;
 
   for (const startCell of queue) {
     const key = `${startCell.x},${startCell.y}`;
     if (!visited.has(key)) {
       visited.add(key);
-      connectedCount++;
+      if (isTargetBlockRow(startCell.y)) {
+        connectedTargetCount++;
+      }
     }
   }
 
@@ -1560,25 +1867,126 @@ function hasFloatingBlocks(board: Board): boolean {
       if (x >= 0 && x < COLS && y >= 0 && y < ROWS && board[y][x] === 1 && !visited.has(key)) {
         visited.add(key);
         queue.push({ x, y });
-        connectedCount++;
+        if (isTargetBlockRow(y)) {
+          connectedTargetCount++;
+        }
       }
     }
   }
 
-  return connectedCount < totalSolid;
+  return connectedTargetCount < totalTargetSolid;
+}
+
+function isTargetBlockRow(y: number): boolean {
+  return y <= BASELINE;
 }
 
 function canPackRemainingBlocks(board: Board): boolean {
-  if (getTopSolidRow(board) <= VISIBLE_TOP) {
-    return canExactlyPackBoard(
-      board.map((row) => [...row]),
-      new Set(),
-      { visited: 0 },
-    );
+  const topSolidRow = getTopSolidRow(board);
+  if (topSolidRow <= PATH_AWARE_PACK_TOP && !hasPathableFrontierPlacement(board)) {
+    return false;
+  }
+  if (!hasStablePathableCoverageForWallBlocks(board)) {
+    return false;
   }
 
+  return canPackRemainingBlocksBySupport(board);
+}
+
+function canPackRemainingBlocksBySupport(board: Board): boolean {
   const boardCopy = board.map((row) => [...row]);
   return removeForcedPlacements(boardCopy);
+}
+
+function isSupportPackableBoard(board: Board): boolean {
+  return !hasFloatingBlocks(board) && canPackRemainingBlocksBySupport(board);
+}
+
+function hasPathableFrontierPlacement(board: Board): boolean {
+  const target = findMostConstrainedFrontierCell(board, new Set());
+  return !target || target.placements.length > 0;
+}
+
+function hasStablePathableCoverageForWallBlocks(board: Board): boolean {
+  const rowBits = createRowBits(board);
+  const escapePathByPlacement = new Map<number, boolean>();
+  const pathablePlacementIds = new Set<number>();
+  const stableResultByPlacement = new Map<number, boolean>();
+
+  for (let y = 0; y < BASELINE; y++) {
+    for (let x = 0; x < COLS; x++) {
+      if (board[y][x] !== 1) continue;
+      if (!isWallAdjacentColumn(x)) continue;
+      if (
+        findUniquePlacementsForCell(
+          board,
+          rowBits,
+          x,
+          y,
+          true,
+          1,
+          escapePathByPlacement,
+          pathablePlacementIds,
+          false,
+          stableResultByPlacement,
+        ).length === 0
+      ) {
+        return false;
+      }
+    }
+  }
+
+  return true;
+}
+
+function isWallAdjacentColumn(x: number): boolean {
+  return x <= 1 || x >= COLS - 2;
+}
+
+function findMostConstrainedFrontierCell(
+  board: Board,
+  pathablePlacementIds: Set<number>,
+): { placements: Cell[][] } | null {
+  const rowBits = createRowBits(board);
+  const escapePathByPlacement = new Map<number, boolean>();
+  let fallbackCell: Cell | null = null;
+
+  for (let x = 0; x < COLS; x++) {
+    for (let y = 0; y <= BASELINE; y++) {
+      if (board[y][x] !== 1) continue;
+
+      const placements = findUniquePlacementsForCell(
+        board,
+        rowBits,
+        x,
+        y,
+        true,
+        2,
+        escapePathByPlacement,
+        pathablePlacementIds,
+        true,
+      );
+      if (placements.length <= 1) return { placements };
+      fallbackCell ??= { x, y };
+      break;
+    }
+  }
+
+  return fallbackCell
+    ? {
+        placements: findUniquePlacementsForCell(
+          board,
+          rowBits,
+          fallbackCell.x,
+          fallbackCell.y,
+          true,
+          Number.POSITIVE_INFINITY,
+          escapePathByPlacement,
+          pathablePlacementIds,
+          true,
+        ),
+      }
+    : null;
 }
 
 function removeForcedPlacements(board: Board): boolean {
@@ -1586,12 +1994,13 @@ function removeForcedPlacements(board: Board): boolean {
 
   while (changed) {
     changed = false;
+    const rowBits = createRowBits(board);
 
-    for (let y = 0; y < ROWS; y++) {
+    for (let y = 0; y <= BASELINE; y++) {
       for (let x = 0; x < COLS; x++) {
         if (board[y][x] !== 1) continue;
 
-        const placements = findUniquePlacementsForCell(board, x, y);
+        const placements = findUniquePlacementsForCell(board, rowBits, x, y);
         if (placements.length === 0) return false;
 
         if (placements.length === 1) {
@@ -1611,102 +2020,77 @@ function removeForcedPlacements(board: Board): boolean {
 }
 
 function getTopSolidRow(board: Board): number {
-  for (let y = 0; y < ROWS; y++) {
+  for (let y = 0; y <= BASELINE; y++) {
     if (board[y].some((cell) => cell === 1)) return y;
   }
 
   return ROWS;
 }
 
-function canExactlyPackBoard(
+function findUniquePlacementsForCell(
   board: Board,
-  memo: Set<string>,
-  search: { visited: number },
-): boolean {
-  search.visited++;
-  if (search.visited > 200) return false;
-
-  const key = board.map((row) => row.join('')).join('/');
-  if (memo.has(key)) return false;
-  memo.add(key);
-
-  const target = findMostConstrainedSolidCell(board);
-  if (!target) return true;
-  if (target.placements.length === 0) return false;
-
-  for (const placement of target.placements) {
-    const nextBoard = board.map((row) => [...row]);
-    for (const cell of placement) {
-      nextBoard[cell.y][cell.x] = 0;
-    }
-    if (canExactlyPackBoard(nextBoard, memo, search)) return true;
-  }
-
-  return false;
-}
-
-function findMostConstrainedSolidCell(board: Board): { placements: Cell[][] } | null {
-  let best: { placements: Cell[][] } | null = null;
-
-  for (let y = 0; y < ROWS; y++) {
-    for (let x = 0; x < COLS; x++) {
-      if (board[y][x] !== 1) continue;
-
-      const placements = findUniquePlacementsForCell(board, x, y);
-      if (!best || placements.length < best.placements.length) {
-        best = { placements };
-      }
-    }
-  }
-
-  return best;
-}
-
-function findUniquePlacementsForCell(board: Board, x: number, y: number): Cell[][] {
+  rowBits: number[],
+  x: number,
+  y: number,
+  requireEscapePath = false,
+  maxPlacements = Number.POSITIVE_INFINITY,
+  escapePathByPlacement?: Map<number, boolean>,
+  pathablePlacementIds?: Set<number>,
+  requireSupportPackableResult = false,
+  stableResultByPlacement?: Map<number, boolean>,
+): Cell[][] {
   const placements: Cell[][] = [];
   const seen = new Set<string>();
+  const index = cellIndex({ x, y });
 
-  for (const type of SHAPE_KEYS) {
-    for (let rotationIndex = 0; rotationIndex < 4; rotationIndex++) {
-      const rotation = rotationIndex as Rotation;
-      const shapeCoords = SHAPES[type].coords[rotation];
-
-      for (let originIndex = 0; originIndex < 4; originIndex++) {
-        const originX = x - shapeCoords[originIndex][0];
-        const originY = y - shapeCoords[originIndex][1];
-        const cells: Cell[] = [];
-        let fits = true;
-
-        for (const [cx, cy] of shapeCoords) {
-          const cellX = originX + cx;
-          const cellY = originY + cy;
-
-          if (cellX < 0 || cellX >= COLS || cellY < 0 || cellY >= ROWS) {
-            fits = false;
-            break;
-          }
-
-          if (board[cellY][cellX] !== 1) {
-            fits = false;
-            break;
-          }
-
-          cells.push({ x: cellX, y: cellY });
-        }
-
-        if (!fits || !hasNormalTetrisLandingCollision(board, cells)) continue;
-
-        const key = cells
-          .map((cell) => cell.x + cell.y * COLS)
-          .sort((left, right) => left - right)
-          .join('_');
-
-        if (!seen.has(key)) {
-          seen.add(key);
-          placements.push(cells);
+  for (const placementId of PLACEMENT_METADATA.filledPlacementIdsByCell[index]) {
+    const placement = PLACEMENT_METADATA.placements[placementId];
+    if (seen.has(placement.cellKey)) continue;
+    if (countFilledIndexes(rowBits, placement.cellIndexes) !== placement.cellIndexes.length)
+      continue;
+    if (
+      countFilledIndexes(rowBits, placement.supportIndexes) +
+        (placement.hasFloorSupport ? 1 : 0) ===
+      0
+    ) {
+      continue;
+    }
+    if (requireEscapePath) {
+      let hasPath = pathablePlacementIds?.has(placementId)
+        ? true
+        : escapePathByPlacement?.get(placementId);
+      if (hasPath === undefined) {
+        hasPath = hasEscapePath(
+          board,
+          placement.type,
+          placement.x,
+          placement.y,
+          placement.rotation,
+        );
+        escapePathByPlacement?.set(placementId, hasPath);
+        if (hasPath) {
+          pathablePlacementIds?.add(placementId);
         }
       }
+      if (!hasPath) continue;
+      if (
+        requireSupportPackableResult &&
+        !isSupportPackableBoard(createBoardAfterCarve(board, placement.cells))
+      ) {
+        continue;
+      }
+      const cachedStableResult = stableResultByPlacement?.get(placementId);
+      if (cachedStableResult === false) continue;
+      if (cachedStableResult === undefined && stableResultByPlacement) {
+        const stableResult = !hasFloatingBlocks(createBoardAfterCarve(board, placement.cells));
+        stableResultByPlacement.set(placementId, stableResult);
+        if (!stableResult) continue;
+      }
     }
+
+    seen.add(placement.cellKey);
+    placements.push(placement.cells);
+    if (placements.length >= maxPlacements) return placements;
   }
 
   return placements;

@@ -18,6 +18,7 @@ import {
 } from '../src/App';
 import { ReverseTetrisEngine } from '../src/game';
 import { CONTROL_HINTS, getOverlayContent, getStatusPresentation } from '../src/ui';
+import { moveToValidPlacement } from './game-helpers';
 
 describe('UI helpers and layout', () => {
   it('derives overlay content for ready, failure, and win states', () => {
@@ -65,14 +66,7 @@ describe('UI helpers and layout', () => {
         ...playing,
         firstCarveDone: true,
         noLegalCarveAfterHoldSwap: true,
-        queuedPiece: {
-          type: 'I',
-          path: [{ x: 0, y: 0, r: 0 }],
-          pathIndex: 0,
-          timer: 0,
-          color: '#fff',
-          startCells: [],
-        },
+        queuedPiece: createEscapePiece(),
       }),
     ).toMatchObject({
       text: 'No legal carve, even after hold.',
@@ -102,14 +96,7 @@ describe('UI helpers and layout', () => {
       getStatusPresentation({
         ...playing,
         firstCarveDone: true,
-        queuedPiece: {
-          type: 'I',
-          path: [{ x: 0, y: 0, r: 0 }],
-          pathIndex: 0,
-          timer: 0,
-          color: '#fff',
-          startCells: [],
-        },
+        queuedPiece: createEscapePiece(),
       }),
     ).toMatchObject({ tone: 'warning', pulsing: true });
   });
@@ -124,6 +111,7 @@ describe('UI helpers and layout', () => {
       state,
       status: getStatusPresentation(state),
       onDownloadReplay: vi.fn(),
+      onEndStuckEasyModeGame: vi.fn(),
       onEasyModeChange: vi.fn(),
       onStart: vi.fn(),
     });
@@ -135,6 +123,21 @@ describe('UI helpers and layout', () => {
       'C / Shift',
       'Space / Enter',
     ]);
+
+    const stuckState = { ...state, easyMode: true, noLegalCarveAfterHoldSwap: true };
+    expect(
+      GameLayout({
+        canvasRefs: createCanvasRefs(),
+        easyMode: true,
+        overlay: getOverlayContent(stuckState),
+        state: stuckState,
+        status: getStatusPresentation(stuckState),
+        onDownloadReplay: vi.fn(),
+        onEndStuckEasyModeGame: vi.fn(),
+        onEasyModeChange: vi.fn(),
+        onStart: vi.fn(),
+      }).type,
+    ).toBe('main');
   });
 
   it('covers component helpers and canvas ref drawing', () => {
@@ -158,6 +161,15 @@ describe('UI helpers and layout', () => {
           text: 'Queue Full! Next carve skips!',
           tone: 'warning',
           pulsing: true,
+        },
+      }).type,
+    ).toBe('div');
+    expect(
+      StatusBlock({
+        status: {
+          text: 'Stable',
+          tone: 'stable',
+          pulsing: false,
         },
       }).type,
     ).toBe('div');
@@ -186,9 +198,22 @@ describe('UI helpers and layout', () => {
     expect(controls.type).toBe('div');
     controls.props.children[2].props.onClick();
     expect(onDownloadReplay).toHaveBeenCalledOnce();
+    const defaultControls = ControlList();
+    expect(defaultControls.type).toBe('div');
+    defaultControls.props.children[2].props.onClick();
+    const onEndStuckEasyModeGame = vi.fn();
+    const stuckControls = ControlList({
+      canEndStuckEasyModeGame: true,
+      onEndStuckEasyModeGame,
+    });
+    expect(stuckControls.props.children[3].props.children).toBe('End game');
+    stuckControls.props.children[3].props.onClick();
+    expect(onEndStuckEasyModeGame).toHaveBeenCalledOnce();
+    ControlList({ canEndStuckEasyModeGame: true }).props.children[3].props.onClick();
 
     drawCanvases(state, refs);
     expect(refs.game.current?.getContext('2d')).toBeTruthy();
+    drawCanvases({ ...state, previewQueue: [] }, createCanvasRefs(createCanvas()));
     drawCanvases(state, createCanvasRefs(null));
   });
 
@@ -218,6 +243,7 @@ describe('UI helpers and layout', () => {
       seed: 123,
       options: { easyMode: true },
     });
+    expect(createReplayLog().events).toEqual([]);
   });
 
   it('covers start, keyboard, and animation wiring helpers', () => {
@@ -258,6 +284,38 @@ describe('UI helpers and layout', () => {
     callbacks[0]?.(220);
     stop();
     expect(cancelFrame).toHaveBeenCalledWith(2);
+
+    const movingEngine = new ReverseTetrisEngine(() => 0.5);
+    movingEngine.start();
+    moveToValidPlacement(movingEngine);
+    movingEngine.handleKey('Enter');
+    const movingCallbacks: Array<(timestamp: number) => void> = [];
+    const recordTick = vi.fn();
+    startAnimationLoop(
+      movingEngine,
+      vi.fn(),
+      (callback) => {
+        movingCallbacks.push(callback);
+        return movingCallbacks.length;
+      },
+      vi.fn(),
+      recordTick,
+    );
+    movingCallbacks[0]?.(1000);
+    expect(recordTick).toHaveBeenCalledWith(1000);
+
+    const readyCallbacks: Array<(timestamp: number) => void> = [];
+    startAnimationLoop(
+      new ReverseTetrisEngine(() => 0.5),
+      vi.fn(),
+      (callback) => {
+        readyCallbacks.push(callback);
+        return readyCallbacks.length;
+      },
+      vi.fn(),
+    );
+    readyCallbacks[0]?.(1000);
+    expect(readyCallbacks).toHaveLength(1);
   });
 });
 
@@ -267,6 +325,17 @@ function createCanvasRefs(canvas: HTMLCanvasElement | null = null): CanvasRefs {
     hold: { current: canvas },
     nextOne: { current: canvas },
     nextTwo: { current: canvas },
+  };
+}
+
+function createEscapePiece() {
+  return {
+    type: 'I' as const,
+    path: [{ x: 0, y: 0, r: 0 as const }],
+    pathIndex: 0,
+    timer: 0,
+    color: '#fff',
+    startCells: [],
   };
 }
 

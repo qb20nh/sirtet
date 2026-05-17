@@ -65,6 +65,42 @@ describe('canvas drawing helpers', () => {
     expect(context.fillRects.some((rect) => rect.y < VISIBLE_TOP * BLOCK_SIZE)).toBe(false);
   });
 
+  it('does not render hidden queued, active, or cursor cells', () => {
+    const context = createRecordingContext();
+    const engine = new ReverseTetrisEngine(() => 0.5);
+    const state = {
+      ...engine.start(),
+      activePiece: {
+        type: 'O' as const,
+        path: [{ x: 0, y: VISIBLE_TOP - 2, r: 0 as const }],
+        pathIndex: 0,
+        timer: 0,
+        color: '#fff',
+        startCells: [],
+      },
+      currentShapeType: 'O' as const,
+      ghostValid: true,
+      mouseX: 4,
+      mouseY: VISIBLE_TOP - 2,
+      queuedPiece: {
+        type: 'I' as const,
+        path: [{ x: 0, y: 0, r: 0 as const }],
+        pathIndex: 0,
+        timer: 0,
+        color: '#fff',
+        startCells: [
+          { x: 0, y: VISIBLE_TOP - 1 },
+          { x: 0, y: VISIBLE_TOP },
+        ],
+      },
+    };
+
+    drawGame(context, { width: 300, height: 720 }, state);
+
+    expect(context.fillRects.some((rect) => rect.y < VISIBLE_TOP * BLOCK_SIZE)).toBe(false);
+    expect(context.calls).toContain('strokeRect');
+  });
+
   it('draws and clears mini shape previews', () => {
     const context = createRecordingContext();
 

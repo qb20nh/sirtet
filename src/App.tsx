@@ -24,7 +24,7 @@ export interface CanvasRefs {
   nextTwo: RefObject<HTMLCanvasElement>;
 }
 
-export type ReplayEvent =
+type ReplayEvent =
   | { type: 'start'; t: number; seed: number; options: GameStartOptions }
   | { type: 'key'; t: number; key: string; code: string; accepted: boolean }
   | { type: 'tick'; t: number };
@@ -82,6 +82,12 @@ export function App() {
     downloadReplay(replayRef.current, engine.snapshot());
   }, [engine]);
 
+  const endStuckEasyModeGame = useCallback(() => {
+    if (engine.endStuckEasyModeGame()) {
+      syncState();
+    }
+  }, [engine, syncState]);
+
   useEffect(() => {
     drawCanvases(state, canvasRefs);
   }, [state, canvasRefs]);
@@ -114,6 +120,7 @@ export function App() {
       state={state}
       status={getStatusPresentation(state)}
       onDownloadReplay={downloadCurrentReplay}
+      onEndStuckEasyModeGame={endStuckEasyModeGame}
       onEasyModeChange={setEasyMode}
       onStart={startMatch}
     />
@@ -198,6 +205,7 @@ export interface GameLayoutProps {
   state: GameSnapshot;
   status: StatusPresentation;
   onDownloadReplay: () => void;
+  onEndStuckEasyModeGame: () => void;
   onEasyModeChange: (easyMode: boolean) => void;
   onStart: () => void;
 }
@@ -209,6 +217,7 @@ export function GameLayout({
   state,
   status,
   onDownloadReplay,
+  onEndStuckEasyModeGame,
   onEasyModeChange,
   onStart,
 }: GameLayoutProps) {
@@ -267,7 +276,13 @@ export function GameLayout({
             </div>
           </div>
 
-          <ControlList onDownloadReplay={onDownloadReplay} />
+          <ControlList
+            canEndStuckEasyModeGame={
+              state.gameState === 'PLAYING' && state.easyMode && state.noLegalCarveAfterHoldSwap
+            }
+            onDownloadReplay={onDownloadReplay}
+            onEndStuckEasyModeGame={onEndStuckEasyModeGame}
+          />
         </aside>
       </section>
     </main>
@@ -345,9 +360,13 @@ export function Overlay({ content, easyMode, onEasyModeChange, onStart }: Overla
 }
 
 export function ControlList({
+  canEndStuckEasyModeGame = false,
   onDownloadReplay = () => {},
+  onEndStuckEasyModeGame = () => {},
 }: {
+  canEndStuckEasyModeGame?: boolean;
   onDownloadReplay?: () => void;
+  onEndStuckEasyModeGame?: () => void;
 } = {}) {
   return (
     <div class="controls">
@@ -363,11 +382,20 @@ export function ControlList({
       <button type="button" class="replay-button" onClick={onDownloadReplay}>
         Download replay
       </button>
+      {canEndStuckEasyModeGame ? (
+        <button
+          type="button"
+          class="replay-button end-game-button"
+          onClick={onEndStuckEasyModeGame}
+        >
+          End game
+        </button>
+      ) : null}
     </div>
   );
 }
 
-export function createReplaySeed(): number {
+function createReplaySeed(): number {
   return Math.floor(Math.random() * 0x100000000);
 }
 
@@ -408,7 +436,7 @@ export function buildReplayDownload(replay: ReplayLog, snapshot: GameSnapshot): 
   );
 }
 
-export function downloadReplay(replay: ReplayLog, snapshot: GameSnapshot): void {
+function downloadReplay(replay: ReplayLog, snapshot: GameSnapshot): void {
   const blob = new Blob([buildReplayDownload(replay, snapshot)], {
     type: 'application/json',
   });
@@ -420,7 +448,7 @@ export function downloadReplay(replay: ReplayLog, snapshot: GameSnapshot): void 
   URL.revokeObjectURL(url);
 }
 
-export function getReplayTime(timestamp: number, startedAt: number): number {
+function getReplayTime(timestamp: number, startedAt: number): number {
   return Math.max(0, Math.round(timestamp - startedAt));
 }
 
