@@ -35,6 +35,101 @@ button {
   font: inherit;
 }
 
+button:focus-visible,
+input:focus-visible,
+.game-canvas:focus-visible {
+  outline: 2px solid #22d3ee;
+  outline-offset: 3px;
+}
+
+button:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
+.board-column {
+  width: 300px;
+  justify-self: center;
+}
+
+.game-toolbar {
+  display: flex;
+  min-height: 36px;
+  align-items: center;
+  justify-content: end;
+  gap: 12px;
+  margin-bottom: 8px;
+  font-size: 0.75rem;
+}
+
+.game-toolbar span,
+.board-status,
+.board-shapes,
+.touch-controls {
+  display: none;
+}
+
+.pause-button,
+.touch-controls button {
+  min-height: 36px;
+  border: 1px solid #475569;
+  border-radius: 5px;
+  background: #172033;
+  color: #f8fafc;
+  cursor: pointer;
+}
+
+.pause-button {
+  padding: 4px 16px;
+}
+
+.touch-controls {
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  min-inline-size: 0;
+  padding: 0;
+  border: 0;
+  gap: 6px;
+  width: min(320px, calc(100vw - 32px));
+  margin-left: 50%;
+  margin-top: 12px;
+  transform: translateX(-50%);
+}
+
+.touch-controls button {
+  min-height: 44px;
+  touch-action: manipulation;
+  font-size: 0.85rem;
+}
+
+.touch-controls button:active {
+  background: #0891b2;
+}
+
+.touch-up {
+  grid-area: 1 / 2;
+}
+.touch-left {
+  grid-area: 2 / 1;
+}
+.touch-down {
+  grid-area: 2 / 2;
+}
+.touch-right {
+  grid-area: 2 / 3;
+}
+.touch-rotate-left {
+  grid-area: 1 / 4;
+}
+.touch-rotate-right {
+  grid-area: 1 / 5;
+}
+.touch-hold {
+  grid-area: 2 / 4;
+}
+.touch-carve {
+  grid-area: 2 / 5;
+}
+
 .game-shell {
   display: grid;
   min-height: 100vh;
@@ -377,12 +472,66 @@ button {
     order: 2;
   }
 
-  .board-stage {
+  .board-column {
     order: 1;
     justify-self: center;
+    width: min(300px, calc(100vw - 32px), max(180px, calc((100svh - 260px) * 5 / 12)));
+  }
+
+  .board-stage {
+    width: 100%;
+  }
+
+  .game-toolbar {
+    justify-content: space-between;
+  }
+
+  .game-toolbar span,
+  .board-shapes,
+  .board-status {
+    display: block;
+  }
+
+  .board-shapes {
+    margin-bottom: 6px;
+    color: #cbd5e1;
+    font-size: 0.75rem;
+  }
+
+  .board-status {
+    min-height: 34px;
+    margin-bottom: 8px;
+  }
+
+  .board-status .panel-heading {
+    display: none;
+  }
+
+  .board-status .status-text {
+    margin: 0;
+    font-size: 0.75rem;
+  }
+
+  .touch-controls {
+    display: grid;
   }
 
   .panel-right {
     order: 3;
+  }
+}
+
+@media (pointer: coarse) {
+  .touch-controls {
+    display: grid;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .status-pulse {
+    animation: none;
+  }
+  .start-button {
+    transition: none;
   }
 }

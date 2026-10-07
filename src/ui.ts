@@ -24,9 +24,19 @@ export const CONTROL_HINTS: ControlHint[] = [
   { keys: 'Z / X', label: 'Rotate' },
   { keys: 'C / Shift', label: 'Swap/Hold' },
   { keys: 'Space / Enter', label: 'Carve block' },
+  { keys: 'P / Esc', label: 'Pause / Resume' },
 ];
 
 export function getOverlayContent(state: GameSnapshot): OverlayContent {
+  if (state.gameState === 'PAUSED') {
+    return {
+      visible: true,
+      title: 'PAUSED',
+      titleTone: 'neutral',
+      description: 'Your run is safe. Resume when you are ready.',
+      buttonLabel: 'RESUME',
+    };
+  }
   if (state.gameState === 'GAMEOVER') {
     return {
       visible: true,
@@ -57,6 +67,9 @@ export function getOverlayContent(state: GameSnapshot): OverlayContent {
 }
 
 export function getStatusPresentation(state: GameSnapshot): StatusPresentation {
+  if (state.gameState === 'PAUSED') {
+    return { text: 'Paused. Resume when ready.', tone: 'stable', pulsing: false };
+  }
   if (state.gameState !== 'PLAYING') {
     return {
       text: 'Waiting to start...',
@@ -81,9 +94,17 @@ export function getStatusPresentation(state: GameSnapshot): StatusPresentation {
     };
   }
 
+  if (!state.currentShapeHasLegalCarve && state.holdSwapShapeHasLegalCarve) {
+    return {
+      text: 'No carve for this shape. Swap/Hold to continue.',
+      tone: 'warning',
+      pulsing: true,
+    };
+  }
+
   if (state.queuedPiece) {
     return {
-      text: 'Queue Full! Next carve skips!',
+      text: 'Queue full! Next carve advances the escape.',
       tone: 'warning',
       pulsing: true,
     };

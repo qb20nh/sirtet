@@ -2,13 +2,21 @@ import type { ComponentChildren, RefObject } from 'preact';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks';
 
 import { drawGame, drawShapePreview } from './canvas';
+import { type GameSnapshot, ReverseTetrisEngine, type ShapeType } from './game';
 import {
-  type GameSnapshot,
-  type GameStartOptions,
-  ReverseTetrisEngine,
-  type ShapeType,
-  shouldPreventKey,
-} from './game';
+  bindSessionInterruptions,
+  buildReplayDownload,
+  createCommandHandler,
+  createKeyDownHandler,
+  createReplayLog,
+  createSeededRng,
+  getReplayTime,
+  type ReplayEventInput,
+  type ReplayLog,
+  setSessionPaused,
+  startAnimationLoop,
+  startEngine,
+} from './session';
 import {
   CONTROL_HINTS,
   getOverlayContent,
@@ -24,38 +32,24 @@ export interface CanvasRefs {
   nextTwo: RefObject<HTMLCanvasElement>;
 }
 
-type ReplayEvent =
-  | { type: 'start'; t: number; seed: number; options: GameStartOptions }
-  | { type: 'key'; t: number; key: string; code: string; accepted: boolean }
-  | { type: 'tick'; t: number };
-
-export type ReplayEventInput =
-  | { type: 'start'; seed: number; options: GameStartOptions }
-  | { type: 'key'; key: string; code: string; accepted: boolean }
-  | { type: 'tick' };
-
-export interface ReplayLog {
-  version: 1;
-  createdAt: string;
-  seed: number | null;
-  options: GameStartOptions;
-  events: ReplayEvent[];
-}
-
 /* v8 ignore start -- Browser hook wiring is covered by the smoke test; pure helpers are unit-tested. */
 export function App() {
   const rngRef = useRef<() => number>(() => Math.random());
   const replayRef = useRef<ReplayLog>(createReplayLog());
   const replayStartedAtRef = useRef(0);
-  const engine = useMemo(() => new ReverseTetrisEngine(() => rngRef.current()), []);
+  const engineRef = useRef<ReverseTetrisEngine | null>(null);
+  if (!engineRef.current) engineRef.current = new ReverseTetrisEngine(() => rngRef.current());
+  const engine = engineRef.current;
   const [state, setState] = useState<GameSnapshot>(() => engine.snapshot());
   const [easyMode, setEasyMode] = useState(false);
-  const canvasRefs: CanvasRefs = {
-    game: useRef<HTMLCanvasElement>(null),
-    hold: useRef<HTMLCanvasElement>(null),
-    nextOne: useRef<HTMLCanvasElement>(null),
-    nextTwo: useRef<HTMLCanvasElement>(null),
-  };
+  const gameCanvas = useRef<HTMLCanvasElement>(null);
+  const holdCanvas = useRef<HTMLCanvasElement>(null);
+  const nextOneCanvas = useRef<HTMLCanvasElement>(null);
+  const nextTwoCanvas = useRef<HTMLCanvasElement>(null);
+  const canvasRefs = useMemo<CanvasRefs>(
+    () => ({ game: gameCanvas, hold: holdCanvas, nextOne: nextOneCanvas, nextTwo: nextTwoCanvas }),
+    [gameCanvas, holdCanvas, nextOneCanvas, nextTwoCanvas],
+  );
 
   const syncState = useCallback(() => {
     setState(engine.snapshot());
@@ -65,7 +59,7 @@ export function App() {
     replayRef.current.events.push({
       ...event,
       t: getReplayTime(timestamp, replayStartedAtRef.current),
-    } as ReplayEvent);
+    });
   }, []);
 
   const startMatch = useCallback(() => {
@@ -76,7 +70,28 @@ export function App() {
     replayRef.current = createReplayLog(seed, options);
     replayStartedAtRef.current = timestamp;
     startEngine(engine, syncState, () => timestamp, options);
-  }, [easyMode, engine, syncState]);
+    gameCanvas.current?.focus({ preventScroll: true });
+  }, [easyMode, engine, syncState, gameCanvas]);
+
+  const togglePause = useCallback(() => {
+    setSessionPaused(engine, engine.isPlaying(), syncState, undefined, recordReplayEvent);
+    gameCanvas.current?.focus({ preventScroll: true });
+  }, [engine, syncState, recordReplayEvent, gameCanvas]);
+
+  const command = useMemo(
+    () =>
+      createCommandHandler(engine, syncState, (event) =>
+        recordReplayEvent(event, performance.now()),
+      ),
+    [engine, syncState, recordReplayEvent],
+  );
+  const touchCommand = useCallback(
+    (key: string) => {
+      command(key);
+      gameCanvas.current?.focus({ preventScroll: true });
+    },
+    [command, gameCanvas],
+  );
 
   const downloadCurrentReplay = useCallback(() => {
     downloadReplay(replayRef.current, engine.snapshot());
@@ -93,12 +108,20 @@ export function App() {
   }, [state, canvasRefs]);
 
   useEffect(() => {
-    const onKeyDown = createKeyDownHandler(engine, syncState, (event) =>
-      recordReplayEvent(event, performance.now()),
+    const onKeyDown = createKeyDownHandler(
+      engine,
+      syncState,
+      (event) => recordReplayEvent(event, performance.now()),
+      togglePause,
     );
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [engine, recordReplayEvent, syncState]);
+  }, [engine, recordReplayEvent, syncState, togglePause]);
+
+  useEffect(() => {
+    const pause = () => setSessionPaused(engine, true, syncState, undefined, recordReplayEvent);
+    return bindSessionInterruptions(window, document, pause);
+  }, [engine, syncState, recordReplayEvent]);
 
   useEffect(() => {
     if (state.gameState !== 'PLAYING') return;
@@ -122,81 +145,13 @@ export function App() {
       onDownloadReplay={downloadCurrentReplay}
       onEndStuckEasyModeGame={endStuckEasyModeGame}
       onEasyModeChange={setEasyMode}
-      onStart={startMatch}
+      onStart={state.gameState === 'PAUSED' ? togglePause : startMatch}
+      onTogglePause={togglePause}
+      onCommand={touchCommand}
     />
   );
 }
 /* v8 ignore stop */
-
-export interface KeyboardEventLike {
-  code: string;
-  key: string;
-  preventDefault: () => void;
-}
-
-export function startEngine(
-  engine: ReverseTetrisEngine,
-  syncState: () => void,
-  now = () => performance.now(),
-  options: GameStartOptions = {},
-): void {
-  engine.start(now(), options);
-  syncState();
-}
-
-export function createKeyDownHandler(
-  engine: ReverseTetrisEngine,
-  syncState: () => void,
-  recordReplayEvent?: (event: ReplayEventInput) => void,
-) {
-  return (event: KeyboardEventLike) => {
-    const shouldHandleKey = shouldPreventKey(event.key, event.code);
-    if (shouldHandleKey) {
-      event.preventDefault();
-    }
-
-    const accepted = engine.handleKey(event.key, event.code);
-    if (shouldHandleKey) {
-      recordReplayEvent?.({ type: 'key', key: event.key, code: event.code, accepted });
-    }
-
-    if (accepted) {
-      syncState();
-    }
-  };
-}
-
-export function startAnimationLoop(
-  engine: ReverseTetrisEngine,
-  setState: (state: GameSnapshot) => void,
-  requestFrame = requestAnimationFrame,
-  cancelFrame = cancelAnimationFrame,
-  recordTick?: (timestamp: number) => void,
-): () => void {
-  let frame = 0;
-  let stopped = false;
-  const loop = (timestamp: number) => {
-    const previousState = engine.snapshot();
-    engine.tick(timestamp);
-    const nextState = engine.snapshot();
-    setState(nextState);
-
-    if (hasReplayStateChanged(previousState, nextState)) {
-      recordTick?.(timestamp);
-    }
-
-    if (!stopped && nextState.gameState === 'PLAYING') {
-      frame = requestFrame(loop);
-    }
-  };
-
-  frame = requestFrame(loop);
-
-  return () => {
-    stopped = true;
-    cancelFrame(frame);
-  };
-}
 
 export interface GameLayoutProps {
   canvasRefs: CanvasRefs;
@@ -208,6 +163,8 @@ export interface GameLayoutProps {
   onEndStuckEasyModeGame: () => void;
   onEasyModeChange: (easyMode: boolean) => void;
   onStart: () => void;
+  onTogglePause?: () => void;
+  onCommand?: (key: string) => void;
 }
 
 export function GameLayout({
@@ -220,6 +177,8 @@ export function GameLayout({
   onEndStuckEasyModeGame,
   onEasyModeChange,
   onStart,
+  onTogglePause = () => {},
+  onCommand = () => {},
 }: GameLayoutProps) {
   return (
     <main class="game-shell" data-state={state.gameState.toLowerCase()}>
@@ -245,20 +204,44 @@ export function GameLayout({
           </div>
         </aside>
 
-        <section class="board-stage" aria-label="Game board">
-          <canvas
-            ref={canvasRefs.game}
-            width="300"
-            height="720"
-            class="game-canvas"
-            aria-label="Reverse Tetris board"
-          />
-          <Overlay
-            content={overlay}
-            easyMode={easyMode}
-            onEasyModeChange={onEasyModeChange}
-            onStart={onStart}
-          />
+        <section class="board-column" aria-label="Game board and actions">
+          <div class="game-toolbar">
+            <span>
+              Score {state.score} · Lvl {state.level}
+            </span>
+            <button
+              type="button"
+              class="pause-button"
+              disabled={state.gameState !== 'PLAYING' && state.gameState !== 'PAUSED'}
+              onClick={onTogglePause}
+            >
+              {state.gameState === 'PAUSED' ? 'Resume' : 'Pause'}
+            </button>
+          </div>
+          <div class="board-shapes">
+            Hold {state.holdShapeType ?? '—'} · Next {state.previewQueue.join(' / ')}
+          </div>
+          <div class="board-status">
+            <StatusBlock status={status} />
+          </div>
+          <div class="board-stage">
+            <canvas
+              ref={canvasRefs.game}
+              width="300"
+              height="720"
+              class="game-canvas"
+              aria-label="Reverse Tetris board"
+              tabIndex={0}
+            />
+            <Overlay
+              content={overlay}
+              easyMode={easyMode}
+              onEasyModeChange={onEasyModeChange}
+              onStart={onStart}
+              paused={state.gameState === 'PAUSED'}
+            />
+          </div>
+          <TouchControls disabled={state.gameState !== 'PLAYING'} onCommand={onCommand} />
         </section>
 
         <aside class="panel panel-right" aria-label="Next shapes and controls">
@@ -337,25 +320,72 @@ export interface OverlayProps {
   easyMode: boolean;
   onEasyModeChange: (easyMode: boolean) => void;
   onStart: () => void;
+  paused?: boolean;
 }
 
-export function Overlay({ content, easyMode, onEasyModeChange, onStart }: OverlayProps) {
+export function Overlay({
+  content,
+  easyMode,
+  onEasyModeChange,
+  onStart,
+  paused = false,
+}: OverlayProps) {
   return (
     <div class={content.visible ? 'overlay visible' : 'overlay'} aria-hidden={!content.visible}>
       <h1 class={`overlay-title overlay-${content.titleTone}`}>{content.title}</h1>
       <p class="overlay-description">{content.description}</p>
-      <label class="easy-mode-toggle">
-        <input
-          type="checkbox"
-          checked={easyMode}
-          onInput={(event) => onEasyModeChange(event.currentTarget.checked)}
-        />
-        <span>Easy mode</span>
-      </label>
+      {paused ? null : (
+        <label class="easy-mode-toggle">
+          <input
+            type="checkbox"
+            checked={easyMode}
+            onInput={(event) => onEasyModeChange(event.currentTarget.checked)}
+          />
+          <span>Easy mode</span>
+        </label>
+      )}
       <button type="button" class="start-button" onClick={onStart}>
         {content.buttonLabel}
       </button>
     </div>
+  );
+}
+
+const TOUCH_COMMANDS = [
+  { key: 'ArrowUp', label: 'Move up', text: '↑', className: 'touch-up' },
+  { key: 'ArrowLeft', label: 'Move left', text: '←', className: 'touch-left' },
+  { key: 'ArrowDown', label: 'Move down', text: '↓', className: 'touch-down' },
+  { key: 'ArrowRight', label: 'Move right', text: '→', className: 'touch-right' },
+  { key: 'z', label: 'Rotate left', text: '↶', className: 'touch-rotate-left' },
+  { key: 'x', label: 'Rotate right', text: '↷', className: 'touch-rotate-right' },
+  { key: 'c', label: 'Swap or hold', text: 'Hold', className: 'touch-hold' },
+  { key: 'Enter', label: 'Carve block', text: 'Carve', className: 'touch-carve' },
+];
+
+export function TouchControls({
+  disabled,
+  onCommand,
+}: {
+  disabled: boolean;
+  onCommand: (key: string) => void;
+}) {
+  return (
+    <fieldset class="touch-controls" aria-label="Touch controls">
+      {TOUCH_COMMANDS.map(({ key, label, text, className }) => (
+        <button
+          key={key}
+          type="button"
+          class={className}
+          aria-label={label}
+          disabled={disabled}
+          onClick={() => {
+            if (!disabled) onCommand(key);
+          }}
+        >
+          {text}
+        </button>
+      ))}
+    </fieldset>
   );
 }
 
@@ -399,43 +429,6 @@ function createReplaySeed(): number {
   return Math.floor(Math.random() * 0x100000000);
 }
 
-export function createSeededRng(seed: number): () => number {
-  let state = seed >>> 0;
-
-  return () => {
-    state = (state + 0x6d2b79f5) >>> 0;
-    let value = state;
-    value = Math.imul(value ^ (value >>> 15), value | 1);
-    value ^= value + Math.imul(value ^ (value >>> 7), value | 61);
-    return ((value ^ (value >>> 14)) >>> 0) / 0x100000000;
-  };
-}
-
-export function createReplayLog(
-  seed: number | null = null,
-  options: GameStartOptions = {},
-  createdAt = new Date().toISOString(),
-): ReplayLog {
-  return {
-    version: 1,
-    createdAt,
-    seed,
-    options,
-    events: seed === null ? [] : [{ type: 'start', t: 0, seed, options }],
-  };
-}
-
-export function buildReplayDownload(replay: ReplayLog, snapshot: GameSnapshot): string {
-  return JSON.stringify(
-    {
-      ...replay,
-      snapshot,
-    },
-    null,
-    2,
-  );
-}
-
 function downloadReplay(replay: ReplayLog, snapshot: GameSnapshot): void {
   const blob = new Blob([buildReplayDownload(replay, snapshot)], {
     type: 'application/json',
@@ -446,33 +439,6 @@ function downloadReplay(replay: ReplayLog, snapshot: GameSnapshot): void {
   link.download = `sirtet-replay-${new Date().toISOString().replace(/[:.]/g, '-')}.json`;
   link.click();
   URL.revokeObjectURL(url);
-}
-
-function getReplayTime(timestamp: number, startedAt: number): number {
-  return Math.max(0, Math.round(timestamp - startedAt));
-}
-
-function hasReplayStateChanged(before: GameSnapshot, after: GameSnapshot): boolean {
-  return getReplayStateKey(before) !== getReplayStateKey(after);
-}
-
-function getReplayStateKey(state: GameSnapshot): string {
-  return [
-    state.gameState,
-    state.score,
-    state.level,
-    state.piecesCarved,
-    state.currentShapeType,
-    state.currentRotation,
-    state.mouseX,
-    state.mouseY,
-    state.ghostValid,
-    state.activePiece?.type ?? '',
-    state.activePiece?.pathIndex ?? '',
-    state.queuedPiece?.type ?? '',
-    state.queuedPiece?.pathIndex ?? '',
-    state.statusReason,
-  ].join('|');
 }
 
 export function drawCanvases(state: GameSnapshot, refs: CanvasRefs): void {

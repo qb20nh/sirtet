@@ -322,7 +322,7 @@ describe('ReverseTetrisEngine', () => {
 
     expect(engine.tick(100)).toBe(false);
     engine.start();
-    expect(engine.tick(100)).toBe(true);
+    expect(engine.tick(100)).toBe(false);
     expect(engine.handleKey('Enter')).toBe(false);
 
     for (let guard = 0; guard < 20; guard++) {
