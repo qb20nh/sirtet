@@ -21,8 +21,12 @@ const git = async (...args) =>
 const baseline = process.argv[2] ?? '3d2d54184333bd75c91e1a6dc1fbcf7b73197574';
 const candidate = process.argv[3] ?? 'WORKTREE';
 const traces = JSON.parse(readFileSync(join(root, 'scripts/fixtures/engine-traces.json'), 'utf8'));
+const tailTraces = JSON.parse(
+  readFileSync(join(root, 'scripts/fixtures/engine-tail-traces.json'), 'utf8'),
+);
 const warmupRounds = 5;
 const rounds = 9;
+const tailRounds = 30;
 const animationEngineCount = 20;
 const animationFrames = 96;
 const animationStartedAt = 1000.1;
@@ -64,13 +68,13 @@ function runSession(api, trace, inspect = () => {}) {
   let timestamp = 0;
   for (const action of trace.actions) {
     if (typeof action === 'string') {
-      engine.handleKey(action);
-      inspect(engine);
+      const accepted = engine.handleKey(action);
+      inspect(engine, accepted);
     } else {
       for (let frame = 0; frame < action; frame++) {
         timestamp += 1000 / 60;
-        engine.tick(timestamp);
-        inspect(engine);
+        const changed = engine.tick(timestamp);
+        inspect(engine, changed);
       }
     }
   }
@@ -120,6 +124,75 @@ function verifyEquivalence(apis) {
     }
   }
   return { snapshots, paths, boards: boards.length };
+}
+
+function verifyTailEquivalence(apis) {
+  let snapshots = 0;
+  for (const trace of tailTraces) {
+    const expected = [];
+    const before = runSession(apis[0], trace, (engine, result) => {
+      expected.push({ state: engine.snapshot(), result });
+    });
+    let index = 0;
+    const after = runSession(apis[1], trace, (engine, result) => {
+      assert.deepEqual(
+        { state: engine.snapshot(), result },
+        expected[index++],
+        `${trace.name}, setup action ${index}`,
+      );
+      snapshots++;
+    });
+    assert.equal(index, expected.length);
+    assert.equal(before.snapshot().piecesCarved, trace.piecesCarved - 1);
+    assert.equal(before.handleKey(trace.key), true, `${trace.name}, baseline accepts carve`);
+    assert.equal(after.handleKey(trace.key), true, `${trace.name}, candidate accepts carve`);
+    assert.equal(before.snapshot().piecesCarved, trace.piecesCarved);
+    assert.deepEqual(after.snapshot(), before.snapshot(), `${trace.name}, carved state`);
+    snapshots++;
+  }
+  return { snapshots, fixtures: tailTraces.length };
+}
+
+function distribution(values) {
+  const sorted = [...values].sort((a, b) => a - b);
+  return {
+    p50Ms: sorted[Math.ceil(sorted.length * 0.5) - 1],
+    p95Ms: sorted[Math.ceil(sorted.length * 0.95) - 1],
+    maxMs: sorted.at(-1),
+  };
+}
+
+function measureTailCommands(apis) {
+  return Object.fromEntries(
+    tailTraces.map((trace) => {
+      const rawSamples = [];
+      for (let round = -warmupRounds; round < tailRounds; round++) {
+        // Preparing a fresh engine preserves the selected command's cold caches.
+        // Preparation, snapshots and correctness checks are outside its timer.
+        const order = round % 2 ? [1, 0] : [0, 1];
+        const engines = [];
+        for (const index of order) engines[index] = runSession(apis[index], trace);
+        for (const index of order) {
+          let accepted;
+          const sample = measure(() => () => {
+            accepted = engines[index].handleKey(trace.key);
+          });
+          rawSamples.push({ round, warmup: round < 0, revision: index, ...sample });
+          assert.equal(accepted, true, `${trace.name}, timed carve`);
+        }
+        assert.deepEqual(engines[1].snapshot(), engines[0].snapshot());
+      }
+      const summary = [0, 1].map((index) => {
+        const rows = rawSamples.filter((sample) => !sample.warmup && sample.revision === index);
+        const cpu = rows.flatMap((sample) => (sample.cpuMs === null ? [] : [sample.cpuMs]));
+        return {
+          elapsed: distribution(rows.map((sample) => sample.elapsedMs)),
+          mainThreadCpu: cpu.length ? distribution(cpu) : null,
+        };
+      });
+      return [trace.name, { baseline: summary[0], candidate: summary[1], rawSamples }];
+    }),
+  );
 }
 
 function createSupplementalFixtures(api) {
@@ -309,6 +382,7 @@ try {
   const revisions = await Promise.all([baseline, candidate].map(loadEngine));
   const apis = revisions.map(({ api }) => api);
   const equivalence = verifyEquivalence(apis);
+  equivalence.tailCommands = verifyTailEquivalence(apis);
   const fixtures = createSupplementalFixtures(apis[0]);
   Object.assign(equivalence, verifySupplementalEquivalence(apis, fixtures));
   const suites = apis.map((api) => workloads(api, fixtures));
@@ -345,6 +419,7 @@ try {
         : null,
     };
   }
+  const tailCommands = measureTailCommands(apis);
   console.log(
     JSON.stringify(
       {
@@ -365,6 +440,7 @@ try {
           rounds,
           hz: 60,
           traces,
+          tailCommands: { rounds: tailRounds, warmupRounds, traces: tailTraces },
           movementAndRotationInputs: 360,
           allShapeBoundaryControls: {
             fixtures: fixtures.shapeFixtures,
@@ -382,6 +458,7 @@ try {
         },
         equivalence,
         results,
+        tailCommands,
         interpretation:
           'Engine elapsed time in native Node modules; no browser rendering or input latency. ' +
           'Main-thread CPU is separately reported when supported by Node; it excludes scheduling waits and work on other threads, and includes CPU-counter overhead. ' +
@@ -389,7 +466,10 @@ try {
           'Module compilation, trace validation, and movement setup are untimed; startup and session workloads include engine construction. ' +
           'Both revisions run alternating rounds in the same process. Fixed traces cover normal/easy mode and 20 successful carves. ' +
           'Supplemental workloads use fresh engines prepared outside timing through public inputs: seven shapes at all cursor boundaries, ' +
-          'and 20 copies of one stationary legal-ghost escape for 96 fractional-clock frames each. They exclude snapshots and rendering.',
+          'and 20 copies of one stationary legal-ghost escape for 96 fractional-clock frames each. They exclude snapshots and rendering. ' +
+          'The separate tail section measures one selected carve per fresh seeded session, with setup untimed. ' +
+          'Preparation and timed command order alternate together. It reports 30 alternating pairs, ' +
+          'nearest-rank p50/p95/max, main-thread CPU and every raw sample including warmups.',
       },
       null,
       2,

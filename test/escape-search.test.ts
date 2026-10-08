@@ -146,6 +146,12 @@ describe('escape search equivalence', () => {
       );
       const farAbove = { x: SPAWN_X, y: -1e12, r: 0 } as const;
       expect(findEscapePath(empty, type, farAbove.x, farAbove.y, farAbove.r)).toEqual([farAbove]);
+      // Initial states remain unchecked even when they start beside the spawn
+      // gate; legality probes must not change the public path's first move.
+      const besideGate = { x: SPAWN_X - 1, y: VISIBLE_TOP, r: 0 } as const;
+      expect(findEscapePath(empty, type, besideGate.x, besideGate.y, besideGate.r)).toEqual(
+        referencePath(empty, type, besideGate),
+      );
       expect(findEscapePath(board, 'O', 0, 18, 0)).toEqual(expectedPath);
       expect(savedPath).toEqual(expectedPath);
     }

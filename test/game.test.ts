@@ -1,5 +1,6 @@
 import { performance } from 'node:perf_hooks';
 import { describe, expect, it } from 'vitest';
+import tailTraces from '../scripts/fixtures/engine-tail-traces.json';
 
 import {
   BASELINE,
@@ -601,6 +602,42 @@ describe('pure game rules', () => {
     }
   });
 
+  it.each(tailTraces)('preserves the later-session carve and escape path in $name', (trace) => {
+    const engine = new ReverseTetrisEngine(createTestRng(trace.seed));
+    engine.start(0, { easyMode: trace.easyMode });
+    let timestamp = 0;
+    for (const action of trace.actions) {
+      if (typeof action === 'string') engine.handleKey(action);
+      else {
+        for (let frame = 0; frame < action; frame++) {
+          timestamp += 1000 / 60;
+          engine.tick(timestamp);
+        }
+      }
+    }
+
+    const before = engine.snapshot();
+    expect(before.piecesCarved).toBe(trace.piecesCarved - 1);
+    expect(before.ghostValid).toBe(true);
+    expect(engine.handleKey(trace.key)).toBe(true);
+    const after = engine.snapshot();
+    expect(after.piecesCarved).toBe(trace.piecesCarved);
+    const playbackPath = (after.queuedPiece ?? after.activePiece)?.path ?? null;
+    expect(playbackPath?.[0]).toEqual(before.ghostPath?.[0]);
+    expectPathReachesSpawnAndExits(before.currentShapeType as ShapeType, playbackPath);
+    expectPathUsesSingleActionSteps(before.currentShapeType as ShapeType, playbackPath);
+    expect(after.board).not.toEqual(before.board);
+    expect(before.ghostPath).toEqual(
+      findEscapePath(
+        before.board,
+        before.currentShapeType as ShapeType,
+        before.mouseX,
+        before.mouseY,
+        before.currentRotation,
+      ),
+    );
+  });
+
   it('validates board stability and escape paths', () => {
     const board = createInitialBoard();
     const validCells = getCells('O', 0, BASELINE - 3, 0);
@@ -689,6 +726,22 @@ describe('pure game rules', () => {
       expect(isBoardValid(board, getCells('O', x, BASELINE - 1, 0))).toBe(false);
     }
     expect(isBoardValid(board, [])).toBe(true);
+  });
+
+  it('follows upper bridges down into overhangs and rejects severed or nonbinary bridges', () => {
+    for (const x of [3, COLS - 3]) {
+      const board = Array.from({ length: ROWS }, () => Array(COLS).fill(0));
+      for (let y = BASELINE - 2; y < ROWS; y++) board[y][x] = 1;
+      board[BASELINE - 2][x + 2] = 1;
+      board[BASELINE - 1][x + 2] = 1;
+
+      for (const bridge of [1, 0, 2, 1]) {
+        board[BASELINE - 2][x + 1] = bridge;
+        const before = board.map((row) => [...row]);
+        expect(isBoardValid(board, [])).toBe(bridge === 1);
+        expect(board).toEqual(before);
+      }
+    }
   });
 
   it('keeps wall-pillar availability refresh inside a two-frame budget', () => {

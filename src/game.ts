@@ -640,8 +640,8 @@ function hasEscapePath(
   return searchEscapePath(board, type, startX, startY, startR);
 }
 
-// Both legality probes and displayed paths use the same ordered breadth-first search.
-// Store coordinates and parents once per visited state, then build only the winning path.
+// Displayed paths retain ordered breadth-first search and own their returned steps.
+// Boolean packing probes can instead seek the exit depth-first.
 function searchEscapePath(
   board: Board,
   type: ShapeType,
@@ -709,6 +709,46 @@ function searchEscapePath(
     // A valid SRS kick ends kick selection even when this state was already visited.
     return true;
   };
+
+  if (!path) {
+    let firstOccupiedRow = 0;
+    while (firstOccupiedRow < ROWS && rowBits[firstOccupiedRow] === 0) firstOccupiedRow++;
+    const maxY = Math.max(geometry[0].maxY, geometry[1].maxY, geometry[2].maxY, geometry[3].maxY);
+    // Private probes start at in-board placement metadata. Accepted states have
+    // x in [-1, 9], y in [3, 25], and four rotations, plus at most five gated
+    // spawn states and the unchecked initial state: <= 1,018 states. Visiting
+    // each once remains below the public BFS limit regardless of traversal order.
+    while (queueLength > 0) {
+      cursor = --queueLength;
+      const x = xs[cursor];
+      const y = ys[cursor];
+      const rotation = rotations[cursor];
+      if (x === SPAWN_X && rotation === 0 && y + geometry[rotation].maxY < 0) return true;
+      // In wholly empty headroom, move horizontally to spawn, rotate with the
+      // first (zero-offset) SRS kick, and rise through the gate. Unchecked starts
+      // already at gate height must satisfy the gate before taking this shortcut.
+      if (y + maxY < firstOccupiedRow && (y > SPAWN_Y || (x === SPAWN_X && rotation === 0))) {
+        return true;
+      }
+
+      // Push in reverse priority so the stack explores upward/toward spawn first.
+      // Kick order stays unchanged: the first valid kick defines each edge.
+      const options = getRotationOptions(rotation);
+      for (let optionIndex = options.length - 1; optionIndex >= 0; optionIndex--) {
+        const nextRotation = options[optionIndex];
+        const kicks = getSrsKickOffsets(type, rotation, nextRotation);
+        for (let kickIndex = 0; kickIndex < kicks.length; kickIndex++) {
+          const kick = kicks[kickIndex];
+          if (enqueue(x + kick[0], y + kick[1], nextRotation)) break;
+        }
+      }
+      const towardSpawn = x < SPAWN_X ? 1 : -1;
+      enqueue(x - towardSpawn, y, rotation);
+      enqueue(x + towardSpawn, y, rotation);
+      enqueue(x, y - 1, rotation);
+    }
+    return false;
+  }
 
   for (; cursor < queueLength && cursor < 2000; cursor++) {
     const x = xs[cursor];
@@ -1843,70 +1883,54 @@ function createReadyState(): EngineState {
 }
 
 function hasFloatingBlocks(board: Board): boolean {
-  let totalTargetSolid = 0;
-  const queue: Cell[] = [];
-
-  for (let y = 0; y < ROWS; y++) {
+  const solid = new Uint16Array(BASELINE + 1);
+  let anySolid = 0;
+  for (let y = 0; y <= BASELINE; y++) {
+    let bits = 0;
     for (let x = 0; x < COLS; x++) {
-      if (board[y][x] === 1) {
-        if (isTargetBlockRow(y)) {
-          totalTargetSolid++;
-        }
-        if (y >= BASELINE) {
-          queue.push({ x, y });
-        }
+      if (board[y][x] === 1) bits |= 1 << x;
+    }
+    solid[y] = bits;
+    anySolid |= bits;
+  }
+  if (anySolid === 0) return false;
+
+  // Every solid baseline cell is a root. A path from a target to a deeper root
+  // must cross this row, so rows below it cannot change target connectivity.
+  const connected = new Uint16Array(BASELINE + 1);
+  connected[BASELINE] = solid[BASELINE];
+  let pendingRows = solid[BASELINE] ? 1 << BASELINE : 0;
+  while (pendingRows !== 0) {
+    const y = 31 - Math.clz32(pendingRows);
+    pendingRows &= ~(1 << y);
+    let bits = connected[y];
+    let previous: number;
+    do {
+      previous = bits;
+      bits |= ((bits << 1) | (bits >>> 1)) & solid[y];
+    } while (bits !== previous);
+    connected[y] = bits;
+
+    if (y > 0) {
+      const reached = bits & solid[y - 1];
+      if ((reached & ~connected[y - 1]) !== 0) {
+        connected[y - 1] |= reached;
+        pendingRows |= 1 << (y - 1);
+      }
+    }
+    if (y < BASELINE) {
+      const reached = bits & solid[y + 1];
+      if ((reached & ~connected[y + 1]) !== 0) {
+        connected[y + 1] |= reached;
+        pendingRows |= 1 << (y + 1);
       }
     }
   }
 
-  if (totalTargetSolid === 0) {
-    return false;
+  for (let y = 0; y <= BASELINE; y++) {
+    if (solid[y] !== connected[y]) return true;
   }
-
-  const visited = new Uint8Array(CELL_COUNT);
-  let connectedTargetCount = 0;
-
-  for (const startCell of queue) {
-    const key = cellIndex(startCell);
-    if (!visited[key]) {
-      visited[key] = 1;
-      if (isTargetBlockRow(startCell.y)) {
-        connectedTargetCount++;
-      }
-    }
-  }
-
-  const directions = [
-    [1, 0],
-    [-1, 0],
-    [0, 1],
-    [0, -1],
-  ];
-  let cursor = 0;
-
-  while (cursor < queue.length) {
-    const current = queue[cursor++];
-
-    for (const [dx, dy] of directions) {
-      const x = current.x + dx;
-      const y = current.y + dy;
-      const key = y * COLS + x;
-
-      if (x >= 0 && x < COLS && y >= 0 && y < ROWS && board[y][x] === 1 && !visited[key]) {
-        visited[key] = 1;
-        queue.push({ x, y });
-        if (isTargetBlockRow(y)) {
-          connectedTargetCount++;
-        }
-      }
-    }
-  }
-
-  return connectedTargetCount < totalTargetSolid;
-}
-
-function isTargetBlockRow(y: number): boolean {
-  return y <= BASELINE;
+  return false;
 }
 
 function canPackRemainingBlocks(board: Board): boolean {
