@@ -659,7 +659,8 @@ function searchEscapePath(
     }
     return true;
   };
-  visit(packEscapeState(startX, startY, startR));
+  const startKey = packEscapeState(startX, startY, startR);
+  visit(startKey);
   const geometry = ESCAPE_GEOMETRY[type];
   let cursor = 0;
 
@@ -667,12 +668,15 @@ function searchEscapePath(
     if (y <= SPAWN_Y && (x !== SPAWN_X || rotation !== 0)) return false;
     const shape = geometry[rotation];
     if (x + shape.minX < 0 || x + shape.maxX >= COLS || y + shape.maxY >= ROWS) return false;
+    const key = packEscapeState(x, y, rotation);
+    // Queued states already passed collision checks for this unchanged board.
+    // The initial state was inserted unchecked and must still follow the normal checks.
+    if (key !== startKey && key >= 0 && key < visited.length && visited[key]) return true;
     for (const [dy, mask] of shape.rows) {
       const row = y + dy;
       if (row >= 0 && (rowBits[row] & (mask << (x + shape.minX))) !== 0) return false;
     }
 
-    const key = packEscapeState(x, y, rotation);
     if (visit(key)) {
       xs.push(x);
       ys.push(y);
@@ -1806,13 +1810,13 @@ function hasFloatingBlocks(board: Board): boolean {
     return false;
   }
 
-  const visited = new Set<string>();
+  const visited = new Uint8Array(CELL_COUNT);
   let connectedTargetCount = 0;
 
   for (const startCell of queue) {
-    const key = `${startCell.x},${startCell.y}`;
-    if (!visited.has(key)) {
-      visited.add(key);
+    const key = cellIndex(startCell);
+    if (!visited[key]) {
+      visited[key] = 1;
       if (isTargetBlockRow(startCell.y)) {
         connectedTargetCount++;
       }
@@ -1833,10 +1837,10 @@ function hasFloatingBlocks(board: Board): boolean {
     for (const [dx, dy] of directions) {
       const x = current.x + dx;
       const y = current.y + dy;
-      const key = `${x},${y}`;
+      const key = y * COLS + x;
 
-      if (x >= 0 && x < COLS && y >= 0 && y < ROWS && board[y][x] === 1 && !visited.has(key)) {
-        visited.add(key);
+      if (x >= 0 && x < COLS && y >= 0 && y < ROWS && board[y][x] === 1 && !visited[key]) {
+        visited[key] = 1;
         queue.push({ x, y });
         if (isTargetBlockRow(y)) {
           connectedTargetCount++;

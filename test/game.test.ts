@@ -633,6 +633,19 @@ describe('pure game rules', () => {
     expect(rotateLeft(0)).toBe(3);
   });
 
+  it('rejects a severed wall stack even when the opposite wall remains supported', () => {
+    const board = Array.from({ length: ROWS }, () => Array(COLS).fill(0));
+    for (let y = BASELINE - 2; y < ROWS; y++) {
+      for (const x of [0, 1, COLS - 2, COLS - 1]) board[y][x] = 1;
+    }
+
+    expect(isBoardValid(board, [])).toBe(true);
+    for (const x of [0, COLS - 2]) {
+      expect(isBoardValid(board, getCells('O', x, BASELINE - 1, 0))).toBe(false);
+    }
+    expect(isBoardValid(board, [])).toBe(true);
+  });
+
   it('keeps wall-pillar availability refresh inside a two-frame budget', () => {
     const impossible = refreshAvailabilityForBoard(createBlobLeftPillarBoard(), 'L', 'Z');
     expect(impossible.currentShapeHasLegalCarve).toBe(false);

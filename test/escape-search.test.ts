@@ -98,6 +98,8 @@ describe('escape search equivalence', () => {
       { x: SPAWN_X, y: 18 },
       { x: COLS - 1, y: 18 },
       { x: -1, y: 5 },
+      { x: COLS, y: 5 },
+      { x: SPAWN_X - 1, y: VISIBLE_TOP },
       { x: SPAWN_X, y: -3 },
       { x: SPAWN_X, y: ROWS },
     ];
