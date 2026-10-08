@@ -3,8 +3,11 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   type CanvasRefs,
   ControlList,
-  drawCanvases,
+  drawGameCanvas,
+  drawPreviewCanvas,
   GameLayout,
+  getLayoutPresentation,
+  MemoizedGameLayout,
   Metric,
   Overlay,
   PanelCanvas,
@@ -215,10 +218,95 @@ describe('UI helpers and layout', () => {
     expect(onEndStuckEasyModeGame).toHaveBeenCalledOnce();
     ControlList({ canEndStuckEasyModeGame: true }).props.children[3].props.onClick();
 
-    drawCanvases(state, refs);
+    drawGameCanvas(state, refs.game);
+    drawPreviewCanvas(state.holdShapeType, refs.hold);
+    drawPreviewCanvas(state.previewQueue[0] ?? null, refs.nextOne);
     expect(refs.game.current?.getContext('2d')).toBeTruthy();
-    drawCanvases({ ...state, previewQueue: [] }, createCanvasRefs(createCanvas()));
-    drawCanvases(state, createCanvasRefs(null));
+    drawPreviewCanvas(null, refs.nextTwo);
+    drawGameCanvas(state, { current: null });
+    drawPreviewCanvas('T', { current: null });
+  });
+
+  it('skips canvas-only layout updates while preserving visible state and control changes', () => {
+    const engine = new ReverseTetrisEngine(() => 0.5);
+    const state = engine.start();
+    const controls = {
+      canvasRefs: createCanvasRefs(createCanvas()),
+      easyMode: false,
+      onDownloadReplay: vi.fn(),
+      onEndStuckEasyModeGame: vi.fn(),
+      onEasyModeChange: vi.fn(),
+      onStart: vi.fn(),
+      onCommand: vi.fn(),
+    };
+    const presentation = (snapshot = engine.snapshot()) =>
+      getLayoutPresentation({
+        ...controls,
+        state: snapshot,
+        overlay: getOverlayContent(snapshot),
+        status: getStatusPresentation(snapshot),
+      });
+    const original = presentation(state);
+    const layout = new MemoizedGameLayout(original);
+    engine.handleKey('ArrowRight');
+    expect(engine.snapshot().mouseX).not.toBe(state.mouseX);
+    expect(layout.shouldComponentUpdate(presentation())).toBe(false);
+    expect(layout.render().props['data-state']).toBe('playing');
+
+    for (const changed of [
+      { ...state, score: 100 },
+      { ...state, level: 2 },
+      { ...state, holdShapeType: 'T' as const },
+      { ...state, previewQueue: ['J', 'L'] as const },
+      { ...state, gameState: 'PAUSED' as const },
+      { ...state, gameState: 'GAMEOVER' as const, statusReason: 'Test loss' },
+      { ...state, firstCarveDone: true, noLegalCarveAfterHoldSwap: true },
+    ]) {
+      expect(
+        layout.shouldComponentUpdate(
+          presentation({ ...changed, previewQueue: [...changed.previewQueue] }),
+        ),
+      ).toBe(true);
+    }
+    const escaping = {
+      ...state,
+      firstCarveDone: true,
+      easyMode: true,
+      activePiece: createEscapePiece(),
+    };
+    const activeLayout = new MemoizedGameLayout(presentation(escaping));
+    expect(
+      activeLayout.shouldComponentUpdate(
+        presentation({ ...escaping, activePiece: { ...escaping.activePiece, timer: 100 } }),
+      ),
+    ).toBe(false);
+    expect(
+      activeLayout.shouldComponentUpdate(presentation({ ...escaping, activePiece: null })),
+    ).toBe(true);
+    const queuedLayout = new MemoizedGameLayout(
+      presentation({ ...escaping, queuedPiece: createEscapePiece() }),
+    );
+    expect(queuedLayout.shouldComponentUpdate(presentation(escaping))).toBe(true);
+    expect(layout.shouldComponentUpdate({ ...original, easyMode: true })).toBe(true);
+    expect(layout.shouldComponentUpdate({ ...original, downloadStatus: 'preparing' })).toBe(true);
+    expect(layout.shouldComponentUpdate({ ...original, downloadStatus: 'failed' })).toBe(true);
+    expect(layout.shouldComponentUpdate({ ...original, onCommand: vi.fn() })).toBe(true);
+    const withoutTouchHandler = { ...original };
+    delete withoutTouchHandler.onCommand;
+    expect(layout.shouldComponentUpdate(withoutTouchHandler)).toBe(true);
+  });
+
+  it('disables replay downloads while preparing and exposes a retryable failure', () => {
+    const busy = ControlList({ downloadStatus: 'preparing' });
+    expect(busy.props.children[2].props.disabled).toBe(true);
+    expect(busy.props.children[2].props.children).toBe('Preparing replay…');
+    expect(busy.props.children[4]).toBeNull();
+    const failed = ControlList({ downloadStatus: 'failed' });
+    expect(failed.props.children[2].props.disabled).toBe(false);
+    expect(failed.props.children[2].props.children).toBe('Download replay');
+    expect(failed.props.children[4].props.role).toBe('alert');
+    expect(failed.props.children[4].props.children).toBe('Could not prepare replay. Try again.');
+    expect(ControlList().props.children[2].props.disabled).toBe(false);
   });
 
   it('builds deterministic replay downloads', () => {
@@ -288,7 +376,8 @@ describe('UI helpers and layout', () => {
     );
     callbacks[0]?.(220);
     stop();
-    expect(cancelFrame).toHaveBeenCalledWith(2);
+    expect(callbacks).toHaveLength(0);
+    expect(cancelFrame).toHaveBeenCalledWith(0);
 
     const movingEngine = new ReverseTetrisEngine(() => 0.5);
     movingEngine.start();

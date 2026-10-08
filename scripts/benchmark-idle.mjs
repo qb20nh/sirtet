@@ -13,7 +13,7 @@ import ts from 'typescript';
 // Usage: node scripts/benchmark-idle.mjs [baseline-ref] [candidate-ref | WORKTREE]
 // Redirect stdout to retain the complete JSON result. Setup and assertions are untimed.
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const baselineRef = process.argv[2] ?? 'dbb0f9942fa374a04d1ad746de5a87ac8513d8db';
+const baselineRef = process.argv[2] ?? '3d2d54184333bd75c91e1a6dc1fbcf7b73197574';
 const candidateRef = process.argv[3] ?? 'WORKTREE';
 const frames = 600;
 const warmups = 5;
@@ -84,7 +84,13 @@ function createMeasurement({ Engine, startLoop }) {
   return () => {
     // No active piece exists; rebasing this private clock leaves the snapshot unchanged.
     engine.tick(0);
-    const counts = { snapshots: 0, publications: 0, replayTicks: 0, frameRequests: 0 };
+    const counts = {
+      snapshots: 0,
+      publications: 0,
+      replayTicks: 0,
+      frameRequests: 0,
+      frameCallbacks: 0,
+    };
     engine.snapshot = () => {
       counts.snapshots++;
       return snapshot();
@@ -101,11 +107,21 @@ function createMeasurement({ Engine, startLoop }) {
       () => counts.replayTicks++,
     );
     const started = performance.now();
-    for (let frame = 1; frame <= frames; frame++) callback((frame * 1000) / 60);
+    // Each opportunity invokes only a pending callback. A sleeping loop must not
+    // be charged for synthetic callbacks the browser would never deliver.
+    for (let frame = 1; frame <= frames; frame++) {
+      const pending = callback;
+      callback = undefined;
+      if (pending) {
+        counts.frameCallbacks++;
+        pending((frame * 1000) / 60);
+      }
+    }
     const elapsedMs = performance.now() - started;
     stop();
     assert.deepEqual(snapshot(), before, 'Idle callbacks must preserve the full snapshot');
-    assert.equal(counts.frameRequests, frames + 1);
+    assert.equal(counts.frameRequests, counts.frameCallbacks + Number(Boolean(callback)));
+    assert.ok(counts.frameCallbacks <= frames);
     assert.equal(counts.replayTicks, 0);
     return { elapsedMs, counts };
   };
@@ -115,7 +131,7 @@ function measureRound(measure) {
   const samples = Array.from({ length: batchesPerRound }, measure);
   for (const sample of samples) assert.deepEqual(sample.counts, samples[0].counts);
   return {
-    meanMsPer600Callbacks:
+    meanMsPer600FrameOpportunities:
       samples.reduce((total, sample) => total + sample.elapsedMs, 0) / batchesPerRound,
     samples,
   };
@@ -132,9 +148,11 @@ for (let round = 0; round < rounds; round++) {
   }
 }
 for (const result of results) {
-  const sorted = result.rounds.map((round) => round.meanMsPer600Callbacks).sort((a, b) => a - b);
-  result.medianMsPer600Callbacks = sorted[Math.floor(sorted.length / 2)];
-  result.countsPer600Callbacks = result.rounds[0].samples[0].counts;
+  const sorted = result.rounds
+    .map((round) => round.meanMsPer600FrameOpportunities)
+    .sort((a, b) => a - b);
+  result.medianMsPer600FrameOpportunities = sorted[Math.floor(sorted.length / 2)];
+  result.countsPer600FrameOpportunities = result.rounds[0].samples[0].counts;
 }
 console.log(
   JSON.stringify(
@@ -153,10 +171,12 @@ console.log(
         head: (await git('rev-parse', 'HEAD')).trim(),
         status: (await git('status', '--short')).trimEnd(),
       },
-      workload: { frames, hz: 60, rng: 0.5, warmups, rounds, batchesPerRound },
+      workload: { frameOpportunities: frames, hz: 60, rng: 0.5, warmups, rounds, batchesPerRound },
       interpretation:
         'Actual engine and loop callback work with counted snapshots/publications; no browser rendering. ' +
-        'Elapsed milliseconds include counter instrumentation and simulated scheduling, not startup. ' +
+        'Only requested callbacks run across 600 simulated frame opportunities (10 seconds at 60 Hz). ' +
+        'Elapsed milliseconds include counter instrumentation and the simulated scheduler, not startup. ' +
+        'A result with zero callbacks measures harness overhead, not game callback latency. ' +
         'This does not measure input latency, browser FPS, CPU utilization or battery use.',
       results,
     },

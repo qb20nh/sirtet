@@ -365,7 +365,38 @@ const I_SRS_KICKS: Record<string, readonly (readonly [number, number])[]> = {
 };
 
 const SHAPE_KEYS: ShapeType[] = ['I', 'J', 'L', 'O', 'S', 'T', 'Z'];
+const ESCAPE_GEOMETRY = Object.fromEntries(
+  SHAPE_KEYS.map((type) => [
+    type,
+    SHAPES[type].coords.map((cells) => {
+      const minX = Math.min(...cells.map(([x]) => x));
+      const rows = new Map<number, number>();
+      for (const [x, y] of cells) rows.set(y, (rows.get(y) ?? 0) | (1 << (x - minX)));
+      return {
+        minX,
+        maxX: Math.max(...cells.map(([x]) => x)),
+        maxY: Math.max(...cells.map(([, y]) => y)),
+        rows: [...rows],
+      };
+    }),
+  ]),
+) as Record<ShapeType, { minX: number; maxX: number; maxY: number; rows: [number, number][] }[]>;
 const CELL_COUNT = ROWS * COLS;
+// Board dimensions keep the packed row and one-hot column mask within 16 bits.
+const CELL_ADDRESSES = Uint16Array.from(
+  { length: CELL_COUNT },
+  (_, index) => (Math.floor(index / COLS) << COLS) | (1 << (index % COLS)),
+);
+const ESCAPE_STATE_COUNT = (ROWS + 8) * (COLS + 8) * 4;
+// Searches are synchronous and invoke no callbacks while using this workspace.
+// The board and iteration limits bound retained queues; returned paths own their steps.
+const ESCAPE_WORKSPACE = {
+  xs: [] as number[],
+  ys: [] as number[],
+  rotations: [] as Rotation[],
+  parents: [] as number[],
+  visited: new Uint8Array(ESCAPE_STATE_COUNT),
+};
 const PLACEMENT_METADATA = createPlacementMetadata();
 const GAME_KEYS = [
   'ArrowUp',
@@ -414,7 +445,7 @@ interface EngineState extends GameSnapshot {
   shapeBag: ShapeType[];
   isFirstBag: boolean;
   lastTime: number;
-  legalityIndex: CarveLegalityIndex;
+  legalityIndex: CarveLegalityIndex | null;
 }
 
 interface CarvePlacement {
@@ -424,13 +455,13 @@ interface CarvePlacement {
   y: number;
   rotation: Rotation;
   cells: Cell[];
-  cellIndexes: number[];
-  cellKey: string;
-  supportIndexes: number[];
+  cellKey: number;
   hasFloorSupport: boolean;
 }
 
 interface PlacementMetadata {
+  cellAddresses: Uint16Array;
+  supportAddresses: Uint16Array;
   placements: CarvePlacement[];
   idsByKey: Map<string, number>;
   idsByShape: Map<ShapeType, number[]>;
@@ -447,6 +478,7 @@ interface CarveLegalityIndex {
   legalPathByPlacement: Map<number, PathStep[] | null>;
   shapeHasLegalCarve: Map<ShapeType, boolean>;
   packValidityByResultMask: Map<string, boolean>;
+  boardValidityByPlacement: Map<number, boolean>;
 }
 
 export function createInitialBoard(): Board {
@@ -491,17 +523,20 @@ export function getSrsRotationCandidates(
   }));
 }
 
+const EMPTY_KICKS: readonly (readonly [number, number])[] = [];
+const O_KICKS: readonly (readonly [number, number])[] = [[0, 0]];
+const SRS_KICKS_BY_ROTATION = [JLSTZ_SRS_KICKS, I_SRS_KICKS].map((kicks) =>
+  Array.from({ length: 4 }, (_, from) =>
+    Array.from({ length: 4 }, (_, to) => kicks[`${from}>${to}`] ?? EMPTY_KICKS),
+  ),
+);
+
 function getSrsKickOffsets(
   type: ShapeType,
   from: Rotation,
   to: Rotation,
 ): readonly (readonly [number, number])[] {
-  if (type === 'O') return [[0, 0]];
-
-  const key = `${from}>${to}`;
-  const kicks = type === 'I' ? I_SRS_KICKS[key] : JLSTZ_SRS_KICKS[key];
-
-  return kicks ?? [];
+  return type === 'O' ? O_KICKS : SRS_KICKS_BY_ROTATION[type === 'I' ? 1 : 0][from][to];
 }
 
 function isQuarterRotation(from: Rotation, to: Rotation): boolean {
@@ -545,9 +580,13 @@ function isCursorOutOfVisibleBounds(
   y: number,
   rotation: Rotation,
 ): boolean {
-  return getCells(type, x, y, rotation).some(
-    (cell) => cell.x < 0 || cell.x >= COLS || cell.y < VISIBLE_TOP || cell.y >= ROWS,
-  );
+  if (!type) return false;
+  for (const [dx, dy] of SHAPES[type].coords[rotation]) {
+    const cellX = x + dx;
+    const cellY = y + dy;
+    if (cellX < 0 || cellX >= COLS || cellY < VISIBLE_TOP || cellY >= ROWS) return true;
+  }
+  return false;
 }
 
 export function isBoardValid(board: Board, cells: Cell[]): boolean {
@@ -587,42 +626,8 @@ export function findEscapePath(
   startY: number,
   startR: Rotation,
 ): PathStep[] | null {
-  const startCells = getCells(type, startX, startY, startR);
-  const queue: PathStepWithHistory[] = [
-    {
-      x: startX,
-      y: startY,
-      r: startR,
-      path: [{ x: startX, y: startY, r: startR }],
-    },
-  ];
-  const visited = new Set([`${startX},${startY},${startR}`]);
-  let iterations = 0;
-
-  while (queue.length > 0 && iterations < 2000) {
-    iterations++;
-    const current = queue.shift();
-    if (!current) break;
-
-    if (isExitPosition(type, current)) {
-      return current.path;
-    }
-
-    const moves = createEscapeMoves(board, type, startCells, current);
-
-    for (const move of moves) {
-      const key = `${move.x},${move.y},${move.r}`;
-      if (visited.has(key)) continue;
-
-      visited.add(key);
-      queue.push({
-        ...move,
-        path: [...current.path, move],
-      });
-    }
-  }
-
-  return null;
+  const path: PathStep[] = [];
+  return searchEscapePath(board, type, startX, startY, startR, path) ? path : null;
 }
 
 function hasEscapePath(
@@ -632,54 +637,144 @@ function hasEscapePath(
   startY: number,
   startR: Rotation,
 ): boolean {
-  const rowBits = createRowBits(board);
-  const startRowBits = new Uint16Array(ROWS);
-  for (const cell of getCells(type, startX, startY, startR)) {
-    if (cell.y >= 0 && cell.y < ROWS) {
-      startRowBits[cell.y] |= 1 << cell.x;
-    }
+  return searchEscapePath(board, type, startX, startY, startR);
+}
+
+// Displayed paths retain ordered breadth-first search and own their returned steps.
+// Boolean packing probes can instead seek the exit depth-first.
+function searchEscapePath(
+  board: Board,
+  type: ShapeType,
+  startX: number,
+  startY: number,
+  startR: Rotation,
+  path?: PathStep[],
+): boolean {
+  // The public full-path helper accepts any nonzero cell as an obstacle. Packing
+  // probes retain their existing binary (value === 1) board interpretation.
+  const rowBits = path
+    ? board.map((row) => row.reduce((bits, value, x) => (value === 0 ? bits : bits | (1 << x)), 0))
+    : createRowBits(board);
+  for (const [dx, dy] of SHAPES[type].coords[startR]) {
+    const y = startY + dy;
+    if (y >= 0 && y < ROWS) rowBits[y] &= ~(1 << (startX + dx));
   }
 
-  const queue: PathStep[] = [{ x: startX, y: startY, r: startR }];
-  const visited = new Set([packEscapeState(startX, startY, startR)]);
+  const { xs, ys, rotations, visited } = ESCAPE_WORKSPACE;
+  const parents = path ? ESCAPE_WORKSPACE.parents : undefined;
+  xs[0] = startX;
+  ys[0] = startY;
+  rotations[0] = startR;
+  if (parents) parents[0] = -1;
+  let queueLength = 1;
+  visited.fill(0);
+  let outsideVisited: Set<number> | undefined;
+  const visit = (key: number): boolean => {
+    if (key >= 0 && key < visited.length) {
+      if (visited[key]) return false;
+      visited[key] = 1;
+    } else {
+      // Exported searches can start above or outside the bounded playing field.
+      outsideVisited ??= new Set();
+      if (outsideVisited.has(key)) return false;
+      outsideVisited.add(key);
+    }
+    return true;
+  };
+  const startKey = packEscapeState(startX, startY, startR);
+  visit(startKey);
+  const geometry = ESCAPE_GEOMETRY[type];
   let cursor = 0;
-  let iterations = 0;
 
-  while (cursor < queue.length && iterations < 2000) {
-    iterations++;
-    const current = queue[cursor++];
-    if (isExitPositionFast(type, current)) return true;
+  const enqueue = (x: number, y: number, rotation: Rotation): boolean => {
+    if (y <= SPAWN_Y && (x !== SPAWN_X || rotation !== 0)) return false;
+    const shape = geometry[rotation];
+    if (x + shape.minX < 0 || x + shape.maxX >= COLS || y + shape.maxY >= ROWS) return false;
+    const key = packEscapeState(x, y, rotation);
+    // Queued states already passed collision checks for this unchanged board.
+    // The initial state was inserted unchecked and must still follow the normal checks.
+    if (key !== startKey && key >= 0 && key < visited.length && visited[key]) return true;
+    for (const [dy, mask] of shape.rows) {
+      const row = y + dy;
+      if (row >= 0 && (rowBits[row] & (mask << (x + shape.minX))) !== 0) return false;
+    }
 
-    const upward = { x: current.x, y: current.y - 1, r: current.r };
-    if (canOccupyEscapePathStepFast(rowBits, startRowBits, type, upward)) {
-      const key = packEscapeState(upward.x, upward.y, upward.r);
-      if (!visited.has(key)) {
-        visited.add(key);
-        queue.push(upward);
+    if (visit(key)) {
+      xs[queueLength] = x;
+      ys[queueLength] = y;
+      rotations[queueLength] = rotation;
+      if (parents) parents[queueLength] = cursor;
+      queueLength++;
+    }
+    // A valid SRS kick ends kick selection even when this state was already visited.
+    return true;
+  };
+
+  if (!path) {
+    let firstOccupiedRow = 0;
+    while (firstOccupiedRow < ROWS && rowBits[firstOccupiedRow] === 0) firstOccupiedRow++;
+    const maxY = Math.max(geometry[0].maxY, geometry[1].maxY, geometry[2].maxY, geometry[3].maxY);
+    // Private probes start at in-board placement metadata. Accepted states have
+    // x in [-1, 9], y in [3, 25], and four rotations, plus at most five gated
+    // spawn states and the unchecked initial state: <= 1,018 states. Visiting
+    // each once remains below the public BFS limit regardless of traversal order.
+    while (queueLength > 0) {
+      cursor = --queueLength;
+      const x = xs[cursor];
+      const y = ys[cursor];
+      const rotation = rotations[cursor];
+      if (x === SPAWN_X && rotation === 0 && y + geometry[rotation].maxY < 0) return true;
+      // In wholly empty headroom, move horizontally to spawn, rotate with the
+      // first (zero-offset) SRS kick, and rise through the gate. Unchecked starts
+      // already at gate height must satisfy the gate before taking this shortcut.
+      if (y + maxY < firstOccupiedRow && (y > SPAWN_Y || (x === SPAWN_X && rotation === 0))) {
+        return true;
       }
-    }
 
-    for (const dx of getHorizontalDeltas(current.x)) {
-      if (dx === 0) continue;
-      const horizontal = { x: current.x + dx, y: current.y, r: current.r };
-      if (!canOccupyEscapePathStepFast(rowBits, startRowBits, type, horizontal)) continue;
-      const key = packEscapeState(horizontal.x, horizontal.y, horizontal.r);
-      if (visited.has(key)) continue;
-
-      visited.add(key);
-      queue.push(horizontal);
-    }
-
-    for (const rotation of getRotationOptions(current.r)) {
-      for (const [dx, dy] of getSrsKickOffsets(type, current.r, rotation)) {
-        const candidate = { x: current.x + dx, y: current.y + dy, r: rotation };
-        if (!canOccupyEscapePathStepFast(rowBits, startRowBits, type, candidate)) continue;
-        const key = packEscapeState(candidate.x, candidate.y, candidate.r);
-        if (!visited.has(key)) {
-          visited.add(key);
-          queue.push(candidate);
+      // Push in reverse priority so the stack explores upward/toward spawn first.
+      // Kick order stays unchanged: the first valid kick defines each edge.
+      const options = getRotationOptions(rotation);
+      for (let optionIndex = options.length - 1; optionIndex >= 0; optionIndex--) {
+        const nextRotation = options[optionIndex];
+        const kicks = getSrsKickOffsets(type, rotation, nextRotation);
+        for (let kickIndex = 0; kickIndex < kicks.length; kickIndex++) {
+          const kick = kicks[kickIndex];
+          if (enqueue(x + kick[0], y + kick[1], nextRotation)) break;
         }
-        break;
+      }
+      const towardSpawn = x < SPAWN_X ? 1 : -1;
+      enqueue(x - towardSpawn, y, rotation);
+      enqueue(x + towardSpawn, y, rotation);
+      enqueue(x, y - 1, rotation);
+    }
+    return false;
+  }
+
+  for (; cursor < queueLength && cursor < 2000; cursor++) {
+    const x = xs[cursor];
+    const y = ys[cursor];
+    const rotation = rotations[cursor];
+    if (x === SPAWN_X && rotation === 0 && y + geometry[rotation].maxY < 0) {
+      if (path && parents) {
+        for (let index = cursor; index >= 0; index = parents[index]) {
+          path.push({ x: xs[index], y: ys[index], r: rotations[index] });
+        }
+        path.reverse();
+      }
+      return true;
+    }
+
+    enqueue(x, y - 1, rotation);
+    const towardSpawn = x < SPAWN_X ? 1 : -1;
+    enqueue(x + towardSpawn, y, rotation);
+    enqueue(x - towardSpawn, y, rotation);
+    const options = getRotationOptions(rotation);
+    for (let optionIndex = 0; optionIndex < options.length; optionIndex++) {
+      const nextRotation = options[optionIndex];
+      const kicks = getSrsKickOffsets(type, rotation, nextRotation);
+      for (let kickIndex = 0; kickIndex < kicks.length; kickIndex++) {
+        const kick = kicks[kickIndex];
+        if (enqueue(x + kick[0], y + kick[1], nextRotation)) break;
       }
     }
   }
@@ -689,31 +784,6 @@ function hasEscapePath(
 
 function packEscapeState(x: number, y: number, rotation: Rotation): number {
   return (((y + 8) * (COLS + 8) + x + 4) << 2) | rotation;
-}
-
-function isExitPositionFast(type: ShapeType, step: PathStep): boolean {
-  return isInSpawnColumn(step) && SHAPES[type].coords[step.r].every(([, dy]) => step.y + dy < 0);
-}
-
-function canOccupyEscapePathStepFast(
-  rowBits: number[],
-  startRowBits: Uint16Array,
-  type: ShapeType,
-  step: PathStep,
-): boolean {
-  if (step.y <= SPAWN_Y && !isInSpawnColumn(step)) return false;
-
-  for (const [dx, dy] of SHAPES[type].coords[step.r]) {
-    const x = step.x + dx;
-    const y = step.y + dy;
-    if (x < 0 || x >= COLS || y >= ROWS) return false;
-    if (y < 0) continue;
-
-    const bit = 1 << x;
-    if ((rowBits[y] & bit) !== 0 && (startRowBits[y] & bit) === 0) return false;
-  }
-
-  return true;
 }
 
 export function findLegalCarvePath(
@@ -746,6 +816,9 @@ export function hasLegalCarvePlacement(board: Board, type: ShapeType | null | un
 
 function createPlacementMetadata(): PlacementMetadata {
   const placements: CarvePlacement[] = [];
+  const cellPatternIds = new Map<string, number>();
+  const cellAddresses: number[] = [];
+  const supportAddresses: number[] = [];
   const idsByKey = new Map<string, number>();
   const idsByShape = new Map<ShapeType, number[]>();
   const filledPlacementIdsByCell = Array.from({ length: CELL_COUNT }, () => [] as number[]);
@@ -758,32 +831,46 @@ function createPlacementMetadata(): PlacementMetadata {
   for (const type of SHAPE_KEYS) {
     for (let rotationIndex = 0; rotationIndex < 4; rotationIndex++) {
       const rotation = rotationIndex as Rotation;
+      const coords = SHAPES[type].coords[rotation];
+      const minX = Math.min(...coords.map(([x]) => x));
+      const maxX = Math.max(...coords.map(([x]) => x));
+      const minY = Math.min(...coords.map(([, y]) => y));
+      const maxY = Math.max(...coords.map(([, y]) => y));
+      const supportCoords = coords.filter(
+        ([x, y]) => !coords.some(([otherX, otherY]) => otherX === x && otherY === y + 1),
+      );
+      const cellOffsets = coords.map(([x, y]) => y * COLS + x);
+      const sortedCellOffsets = [...cellOffsets].sort((left, right) => left - right);
+      // Normalized offsets and the smallest cell index uniquely identify a cell set.
+      const minimumCellOffset = sortedCellOffsets[0];
+      const cellPattern = sortedCellOffsets.map((offset) => offset - minimumCellOffset).join('_');
+      let patternId = cellPatternIds.get(cellPattern);
+      if (patternId === undefined) {
+        patternId = cellPatternIds.size;
+        cellPatternIds.set(cellPattern, patternId);
+      }
+      const cellKeyOffset = patternId * CELL_COUNT + minimumCellOffset;
 
-      for (let y = -4; y < ROWS + 4; y++) {
-        for (let x = -4; x < COLS + 4; x++) {
+      for (let y = 0 - minY; y < ROWS - maxY; y++) {
+        for (let x = 0 - minX; x < COLS - maxX; x++) {
           const cells = getCells(type, x, y, rotation);
-          if (cells.some((cell) => cell.x < 0 || cell.x >= COLS || cell.y < 0 || cell.y >= ROWS)) {
-            continue;
+          const anchorIndex = y * COLS + x;
+          const cellIndexes = cellOffsets.map((offset) => anchorIndex + offset);
+          const cellKey = cellKeyOffset + anchorIndex;
+          const hasFloorSupport = y + maxY === ROWS - 1;
+          const supportIndexes = (
+            hasFloorSupport
+              ? supportCoords.filter(([, supportY]) => y + supportY + 1 < ROWS)
+              : supportCoords
+          ).map(([supportX, supportY]) => (y + supportY + 1) * COLS + x + supportX);
+
+          // Four slots per placement; unused support slots carry a zero mask.
+          for (let cell = 0; cell < 4; cell++) {
+            cellAddresses.push(CELL_ADDRESSES[cellIndexes[cell]]);
+            supportAddresses.push(
+              cell < supportIndexes.length ? CELL_ADDRESSES[supportIndexes[cell]] : 0,
+            );
           }
-
-          const cellIndexes = cells.map(cellIndex);
-          const cellKey = [...cellIndexes].sort((left, right) => left - right).join('_');
-          const supportIndexes = new Set<number>();
-          let hasFloorSupport = false;
-
-          for (const cell of cells) {
-            const belowY = cell.y + 1;
-            if (belowY >= ROWS) {
-              hasFloorSupport = true;
-              continue;
-            }
-
-            const isSelf = cells.some((other) => other.x === cell.x && other.y === belowY);
-            if (!isSelf) {
-              supportIndexes.add(cellIndex({ x: cell.x, y: belowY }));
-            }
-          }
-
           const id = placements.length;
           const placement: CarvePlacement = {
             id,
@@ -792,9 +879,7 @@ function createPlacementMetadata(): PlacementMetadata {
             y,
             rotation,
             cells,
-            cellIndexes,
             cellKey,
-            supportIndexes: [...supportIndexes],
             hasFloorSupport,
           };
 
@@ -815,6 +900,8 @@ function createPlacementMetadata(): PlacementMetadata {
 
   return {
     placements,
+    cellAddresses: Uint16Array.from(cellAddresses),
+    supportAddresses: Uint16Array.from(supportAddresses),
     idsByKey,
     idsByShape,
     filledPlacementIdsByCell,
@@ -828,9 +915,14 @@ function createCarveLegalityIndex(board: Board): CarveLegalityIndex {
   const supportCountByPlacement = new Uint8Array(PLACEMENT_METADATA.placements.length);
 
   for (const placement of PLACEMENT_METADATA.placements) {
-    filledCountByPlacement[placement.id] = countFilledIndexes(rowBits, placement.cellIndexes);
+    filledCountByPlacement[placement.id] = countFilledAddresses(
+      rowBits,
+      PLACEMENT_METADATA.cellAddresses,
+      placement.id,
+    );
     supportCountByPlacement[placement.id] =
-      countFilledIndexes(rowBits, placement.supportIndexes) + (placement.hasFloorSupport ? 1 : 0);
+      countFilledAddresses(rowBits, PLACEMENT_METADATA.supportAddresses, placement.id) +
+      (placement.hasFloorSupport ? 1 : 0);
   }
 
   return {
@@ -842,6 +934,7 @@ function createCarveLegalityIndex(board: Board): CarveLegalityIndex {
     legalPathByPlacement: new Map(),
     shapeHasLegalCarve: new Map(),
     packValidityByResultMask: new Map(),
+    boardValidityByPlacement: new Map(),
   };
 }
 
@@ -905,9 +998,9 @@ function getLegalPathForPlacement(
   let escapePath: PathStep[] | null = null;
 
   if (
-    isPreparedBoardValidInIndex(board, legalityIndex) &&
-    legalityIndex.filledCountByPlacement[placementId] === placement.cellIndexes.length &&
-    legalityIndex.supportCountByPlacement[placementId] > 0
+    legalityIndex.filledCountByPlacement[placementId] === placement.cells.length &&
+    legalityIndex.supportCountByPlacement[placementId] > 0 &&
+    isPreparedBoardValidInIndex(board, legalityIndex)
   ) {
     escapePath = findEscapePath(
       board,
@@ -929,8 +1022,14 @@ function isPlacementBoardValid(
   legalityIndex: CarveLegalityIndex,
   placement: CarvePlacement,
 ): boolean {
-  const simBoard = createBoardAfterCarve(board, placement.cells);
-  return isPreparedBoardValidInIndex(simBoard, legalityIndex);
+  const cached = legalityIndex.boardValidityByPlacement.get(placement.id);
+  if (cached !== undefined) return cached;
+  const valid = isPreparedBoardValidInIndex(
+    createBoardAfterCarve(board, placement.cells),
+    legalityIndex,
+  );
+  legalityIndex.boardValidityByPlacement.set(placement.id, valid);
+  return valid;
 }
 
 function isPreparedBoardValidInIndex(board: Board, legalityIndex: CarveLegalityIndex): boolean {
@@ -957,6 +1056,8 @@ function applyLegalityCellValue(legalityIndex: CarveLegalityIndex, cell: Cell, v
   }
   legalityIndex.boardMask = rowBitsToBoardMask(legalityIndex.rowBits);
   legalityIndex.shapeHasLegalCarve.clear();
+  // Even disjoint carves can change whether a placement leaves a packable board.
+  legalityIndex.boardValidityByPlacement.clear();
 
   if (value === 1) {
     legalityIndex.legalPathByPlacement.clear();
@@ -995,12 +1096,16 @@ function createRowBits(board: Board): number[] {
   );
 }
 
-function countFilledIndexes(rowBits: number[], indexes: number[]): number {
+function countFilledAddresses(
+  rowBits: number[],
+  addresses: Uint16Array,
+  placementId: number,
+): number {
   let count = 0;
-  for (const index of indexes) {
-    const y = Math.floor(index / COLS);
-    const x = index % COLS;
-    if ((rowBits[y] & (1 << x)) !== 0) count++;
+  const start = placementId * 4;
+  for (let offset = start; offset < start + 4; offset++) {
+    const address = addresses[offset];
+    if ((rowBits[address >>> COLS] & (address & ((1 << COLS) - 1))) !== 0) count++;
   }
   return count;
 }
@@ -1019,10 +1124,6 @@ function cellIndex(cell: Cell): number {
 
 function placementKey(type: ShapeType, x: number, y: number, rotation: Rotation): string {
   return `${type},${x},${y},${rotation}`;
-}
-
-interface PathStepWithHistory extends PathStep {
-  path: PathStep[];
 }
 
 interface EscapePlayback {
@@ -1255,71 +1356,15 @@ function isUpwardPathStep(previous: PathStep, current: PathStep): boolean {
   return previous.x === current.x && previous.r === current.r && current.y === previous.y - 1;
 }
 
-function createEscapeMoves(
-  board: Board,
-  type: ShapeType,
-  startCells: Cell[],
-  current: PathStep,
-): PathStep[] {
-  const moves: PathStep[] = [];
-  const upward = { x: current.x, y: current.y - 1, r: current.r };
-  if (canOccupyEscapePathStep(board, type, startCells, upward)) {
-    moves.push(upward);
-  }
+const ROTATION_OPTIONS: readonly (readonly Rotation[])[] = [
+  [0, 3, 1],
+  [0, 1, 2],
+  [1, 3, 2],
+  [0, 3, 2],
+];
 
-  for (const dx of getHorizontalDeltas(current.x)) {
-    if (dx !== 0) {
-      const horizontal = { x: current.x + dx, y: current.y, r: current.r };
-      if (canOccupyEscapePathStep(board, type, startCells, horizontal)) {
-        moves.push(horizontal);
-      }
-    }
-  }
-
-  for (const rotation of getRotationOptions(current.r)) {
-    for (const candidate of getSrsRotationCandidates(
-      type,
-      current.x,
-      current.y,
-      current.r,
-      rotation,
-    )) {
-      if (canOccupyEscapePathStep(board, type, startCells, candidate)) {
-        moves.push(candidate);
-        break;
-      }
-    }
-  }
-
-  return moves;
-}
-
-function canOccupyEscapePathStep(
-  board: Board,
-  type: ShapeType,
-  startCells: Cell[],
-  step: PathStep,
-): boolean {
-  if (step.y <= SPAWN_Y && !isInSpawnColumn(step)) return false;
-
-  return getCells(type, step.x, step.y, step.r).every((cell) => {
-    if (cell.x < 0 || cell.x >= COLS || cell.y >= ROWS) return false;
-    const isSelf = startCells.some((startCell) => startCell.x === cell.x && startCell.y === cell.y);
-
-    return cell.y < 0 || board[cell.y][cell.x] === 0 || isSelf;
-  });
-}
-
-function getHorizontalDeltas(x: number): number[] {
-  if (x < SPAWN_X) return [1, 0, -1];
-  if (x > SPAWN_X) return [-1, 0, 1];
-  return [0, -1, 1];
-}
-
-function getRotationOptions(rotation: Rotation): Rotation[] {
-  const options = [rotateLeft(rotation), rotation, rotateRight(rotation)];
-
-  return options.sort((left, right) => getRotationDistance(left) - getRotationDistance(right));
+function getRotationOptions(rotation: Rotation): readonly Rotation[] {
+  return ROTATION_OPTIONS[rotation];
 }
 
 function getRotationDistance(rotation: Rotation): number {
@@ -1470,6 +1515,7 @@ export class ReverseTetrisEngine {
   }
 
   // Timer accumulation is private; callers only need a new snapshot for visible transitions.
+  // Escape playback does not change the board or cursor, so its ghost stays valid.
   tick(timestamp: number): boolean {
     if (this.state.gameState !== 'PLAYING') {
       return false;
@@ -1496,14 +1542,12 @@ export class ReverseTetrisEngine {
       );
       this.state.activePiece.pathIndex++;
       visibleStateChanged = true;
-      this.validateGhost();
     }
 
     if (this.state.activePiece.pathIndex >= this.state.activePiece.path.length - 1) {
       if (!this.state.queuedPiece) {
         if (this.state.easyMode) {
           this.state.activePiece = null;
-          this.validateGhost();
           return true;
         }
 
@@ -1514,7 +1558,6 @@ export class ReverseTetrisEngine {
       this.state.activePiece = this.state.queuedPiece;
       this.state.queuedPiece = null;
       visibleStateChanged = true;
-      this.validateGhost();
     }
 
     return visibleStateChanged;
@@ -1562,23 +1605,16 @@ export class ReverseTetrisEngine {
   private tryRotation(nextRotation: Rotation): boolean {
     if (!this.state.currentShapeType) return false;
 
-    for (const candidate of getSrsRotationCandidates(
+    for (const [dx, dy] of getSrsKickOffsets(
       this.state.currentShapeType,
-      this.state.mouseX,
-      this.state.mouseY,
       this.state.currentRotation,
       nextRotation,
     )) {
-      if (
-        !isCursorOutOfVisibleBounds(
-          this.state.currentShapeType,
-          candidate.x,
-          candidate.y,
-          nextRotation,
-        )
-      ) {
-        this.state.mouseX = candidate.x;
-        this.state.mouseY = candidate.y;
+      const x = this.state.mouseX + dx;
+      const y = this.state.mouseY + dy;
+      if (!isCursorOutOfVisibleBounds(this.state.currentShapeType, x, y, nextRotation)) {
+        this.state.mouseX = x;
+        this.state.mouseY = y;
         this.state.currentRotation = nextRotation;
         return true;
       }
@@ -1704,7 +1740,7 @@ export class ReverseTetrisEngine {
 
   private syncLegalityIndex(): CarveLegalityIndex {
     const boardMask = boardToMask(this.state.board);
-    if (this.state.legalityIndex.boardMask !== boardMask) {
+    if (!this.state.legalityIndex || this.state.legalityIndex.boardMask !== boardMask) {
       this.state.legalityIndex = createCarveLegalityIndex(this.state.board);
     }
 
@@ -1842,75 +1878,59 @@ function createReadyState(): EngineState {
     escapeStepDelay: 400,
     statusReason: '',
     lastTime: 0,
-    legalityIndex: createCarveLegalityIndex(board),
+    legalityIndex: null,
   };
 }
 
 function hasFloatingBlocks(board: Board): boolean {
-  let totalTargetSolid = 0;
-  const queue: Cell[] = [];
-
-  for (let y = 0; y < ROWS; y++) {
+  const solid = new Uint16Array(BASELINE + 1);
+  let anySolid = 0;
+  for (let y = 0; y <= BASELINE; y++) {
+    let bits = 0;
     for (let x = 0; x < COLS; x++) {
-      if (board[y][x] === 1) {
-        if (isTargetBlockRow(y)) {
-          totalTargetSolid++;
-        }
-        if (y >= BASELINE) {
-          queue.push({ x, y });
-        }
+      if (board[y][x] === 1) bits |= 1 << x;
+    }
+    solid[y] = bits;
+    anySolid |= bits;
+  }
+  if (anySolid === 0) return false;
+
+  // Every solid baseline cell is a root. A path from a target to a deeper root
+  // must cross this row, so rows below it cannot change target connectivity.
+  const connected = new Uint16Array(BASELINE + 1);
+  connected[BASELINE] = solid[BASELINE];
+  let pendingRows = solid[BASELINE] ? 1 << BASELINE : 0;
+  while (pendingRows !== 0) {
+    const y = 31 - Math.clz32(pendingRows);
+    pendingRows &= ~(1 << y);
+    let bits = connected[y];
+    let previous: number;
+    do {
+      previous = bits;
+      bits |= ((bits << 1) | (bits >>> 1)) & solid[y];
+    } while (bits !== previous);
+    connected[y] = bits;
+
+    if (y > 0) {
+      const reached = bits & solid[y - 1];
+      if ((reached & ~connected[y - 1]) !== 0) {
+        connected[y - 1] |= reached;
+        pendingRows |= 1 << (y - 1);
+      }
+    }
+    if (y < BASELINE) {
+      const reached = bits & solid[y + 1];
+      if ((reached & ~connected[y + 1]) !== 0) {
+        connected[y + 1] |= reached;
+        pendingRows |= 1 << (y + 1);
       }
     }
   }
 
-  if (totalTargetSolid === 0) {
-    return false;
+  for (let y = 0; y <= BASELINE; y++) {
+    if (solid[y] !== connected[y]) return true;
   }
-
-  const visited = new Set<string>();
-  let connectedTargetCount = 0;
-
-  for (const startCell of queue) {
-    const key = `${startCell.x},${startCell.y}`;
-    if (!visited.has(key)) {
-      visited.add(key);
-      if (isTargetBlockRow(startCell.y)) {
-        connectedTargetCount++;
-      }
-    }
-  }
-
-  const directions = [
-    [1, 0],
-    [-1, 0],
-    [0, 1],
-    [0, -1],
-  ];
-  let cursor = 0;
-
-  while (cursor < queue.length) {
-    const current = queue[cursor++];
-
-    for (const [dx, dy] of directions) {
-      const x = current.x + dx;
-      const y = current.y + dy;
-      const key = `${x},${y}`;
-
-      if (x >= 0 && x < COLS && y >= 0 && y < ROWS && board[y][x] === 1 && !visited.has(key)) {
-        visited.add(key);
-        queue.push({ x, y });
-        if (isTargetBlockRow(y)) {
-          connectedTargetCount++;
-        }
-      }
-    }
-  }
-
-  return connectedTargetCount < totalTargetSolid;
-}
-
-function isTargetBlockRow(y: number): boolean {
-  return y <= BASELINE;
+  return false;
 }
 
 function canPackRemainingBlocks(board: Board): boolean {
@@ -1981,7 +2001,7 @@ function findMostConstrainedFrontierCell(
 ): { placements: Cell[][] } | null {
   const rowBits = createRowBits(board);
   const escapePathByPlacement = new Map<number, boolean>();
-  let fallbackCell: Cell | null = null;
+  let fallbackPlacements: Cell[][] | null = null;
 
   for (let x = 0; x < COLS; x++) {
     for (let y = 0; y <= BASELINE; y++) {
@@ -1999,26 +2019,12 @@ function findMostConstrainedFrontierCell(
         true,
       );
       if (placements.length <= 1) return { placements };
-      fallbackCell ??= { x, y };
+      fallbackPlacements ??= placements;
       break;
     }
   }
 
-  return fallbackCell
-    ? {
-        placements: findUniquePlacementsForCell(
-          board,
-          rowBits,
-          fallbackCell.x,
-          fallbackCell.y,
-          true,
-          Number.POSITIVE_INFINITY,
-          escapePathByPlacement,
-          pathablePlacementIds,
-          true,
-        ),
-      }
-    : null;
+  return fallbackPlacements ? { placements: fallbackPlacements } : null;
 }
 
 function removeForcedPlacements(board: Board): boolean {
@@ -2032,7 +2038,8 @@ function removeForcedPlacements(board: Board): boolean {
       for (let x = 0; x < COLS; x++) {
         if (board[y][x] !== 1) continue;
 
-        const placements = findUniquePlacementsForCell(board, rowBits, x, y);
+        // Only a unique placement is forced; a second match settles this cell.
+        const placements = findUniquePlacementsForCell(board, rowBits, x, y, false, 2);
         if (placements.length === 0) return false;
 
         if (placements.length === 1) {
@@ -2072,16 +2079,19 @@ function findUniquePlacementsForCell(
   stableResultByPlacement?: Map<number, boolean>,
 ): Cell[][] {
   const placements: Cell[][] = [];
-  const seen = new Set<string>();
+  const seen = new Set<number>();
   const index = cellIndex({ x, y });
 
   for (const placementId of PLACEMENT_METADATA.filledPlacementIdsByCell[index]) {
     const placement = PLACEMENT_METADATA.placements[placementId];
     if (seen.has(placement.cellKey)) continue;
-    if (countFilledIndexes(rowBits, placement.cellIndexes) !== placement.cellIndexes.length)
+    if (
+      countFilledAddresses(rowBits, PLACEMENT_METADATA.cellAddresses, placement.id) !==
+      placement.cells.length
+    )
       continue;
     if (
-      countFilledIndexes(rowBits, placement.supportIndexes) +
+      countFilledAddresses(rowBits, PLACEMENT_METADATA.supportAddresses, placement.id) +
         (placement.hasFloorSupport ? 1 : 0) ===
       0
     ) {

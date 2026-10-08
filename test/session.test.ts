@@ -45,33 +45,21 @@ describe('session loop', () => {
     expect(pause).toHaveBeenCalledTimes(2);
   });
 
-  it('does no snapshot or render work during 600 idle frames', () => {
+  it('requests no animation callbacks while waiting for a carve', () => {
     const engine = new ReverseTetrisEngine(() => 0.5);
     engine.start(0);
     const snapshot = vi.spyOn(engine, 'snapshot');
     const publish = vi.fn();
     const recordTick = vi.fn();
-    let frame: (timestamp: number) => void = () => {};
-    const stop = startAnimationLoop(
-      engine,
-      publish,
-      (callback) => {
-        frame = callback;
-        return 1;
-      },
-      vi.fn(),
-      recordTick,
-    );
-    const started = performance.now();
-    for (let i = 1; i <= 600; i++) frame((i * 1000) / 60);
-    const elapsed = performance.now() - started;
-    stop();
-    console.info(
-      `600 idle frames: snapshots=${snapshot.mock.calls.length}, publishes=${publish.mock.calls.length}, replay ticks=${recordTick.mock.calls.length}, loop=${elapsed.toFixed(2)}ms`,
-    );
+    const requestFrame = vi.fn();
+    const tick = vi.spyOn(engine, 'tick');
+    const stop = startAnimationLoop(engine, publish, requestFrame, vi.fn(), recordTick);
+    expect(requestFrame).not.toHaveBeenCalled();
+    expect(tick).not.toHaveBeenCalled();
     expect(snapshot).not.toHaveBeenCalled();
     expect(publish).not.toHaveBeenCalled();
     expect(recordTick).not.toHaveBeenCalled();
+    stop();
   });
 
   it('publishes only animation steps and ignores callbacks after cleanup', () => {
@@ -237,7 +225,7 @@ describe('session loop', () => {
     const record = (event: ReplayEventInput, time = timestamp) => {
       replay.events.push({ ...event, t: getReplayTime(time, 1000), clock: time });
     };
-    const command = createCommandHandler(engine, vi.fn(), record);
+    const command = createCommandHandler(engine, vi.fn(), record, () => timestamp);
     moveToValidPlacement(engine, command);
     expect(command('Enter')).toBe(true);
     timestamp = 1111;
@@ -253,34 +241,45 @@ describe('session loop', () => {
     expect(getReplayTime(1001.7, 1000)).toBe(1001.7 - 1000);
   });
 
-  it('reconstructs a delayed first carve after idle animation frames', () => {
+  it('gives every easy-mode escape a full first beat after a long idle wait', () => {
     const seed = 123;
     const engine = new ReverseTetrisEngine(createSeededRng(seed));
-    engine.start(0);
-    const replay = createReplayLog(seed);
+    engine.start(0, { easyMode: true });
+    const replay = createReplayLog(seed, { easyMode: true });
     let timestamp = 0;
     const record = (event: ReplayEventInput, time = timestamp) => {
-      replay.events.push({ ...event, t: getReplayTime(time, 0), clock: time });
+      replay.events.push({ ...event, t: time, clock: time });
     };
-    const command = createCommandHandler(engine, vi.fn(), record);
-    let frame: (timestamp: number) => void = () => {};
-    startAnimationLoop(
-      engine,
-      vi.fn(),
-      (callback) => {
-        frame = callback;
-        return 1;
-      },
-      vi.fn(),
-      (time) => record({ type: 'tick' }, time),
-    );
-    for (timestamp = 16; timestamp <= 10_000; timestamp += 16) frame(timestamp);
-    timestamp = 10_000;
-    moveToValidPlacement(engine, command);
-    expect(command('Enter')).toBe(true);
-    frame(10_400);
-
-    expect(reconstructReplay(replay).snapshot()).toEqual(engine.snapshot());
+    const command = createCommandHandler(engine, vi.fn(), record, () => timestamp);
+    const callbacks: Array<(timestamp: number) => void> = [];
+    const requestFrame = vi.fn((callback: (timestamp: number) => void) => {
+      callbacks.push(callback);
+      return callbacks.length;
+    });
+    const run = () =>
+      startAnimationLoop(engine, vi.fn(), requestFrame, vi.fn(), (time) =>
+        record({ type: 'tick' }, time),
+      );
+    run()();
+    expect(requestFrame).not.toHaveBeenCalled();
+    for (let carve = 0; carve < 2; carve++) {
+      timestamp += 60_000;
+      moveToValidPlacement(engine, command);
+      expect(command('Enter')).toBe(true);
+      const stop = run();
+      const delay = firstStepDelay(engine);
+      callbacks.at(-1)?.(timestamp + delay - 1);
+      expect(engine.snapshot().activePiece?.pathIndex).toBe(0);
+      callbacks.at(-1)?.(timestamp + delay);
+      expect(engine.snapshot().activePiece?.pathIndex).toBe(1);
+      timestamp += 10_000;
+      const requests = requestFrame.mock.calls.length;
+      callbacks.at(-1)?.(timestamp);
+      expect(engine.snapshot()).toMatchObject({ gameState: 'PLAYING', activePiece: null });
+      expect(requestFrame).toHaveBeenCalledTimes(requests);
+      expect(reconstructReplay(replay).snapshot()).toEqual(engine.snapshot());
+      stop();
+    }
   });
 
   it('preserves each fractional frame at an escape-step boundary', () => {
@@ -293,8 +292,10 @@ describe('session loop', () => {
     const record = (event: ReplayEventInput, time = timestamp) => {
       replay.events.push({ ...event, t: getReplayTime(time, startedAt), clock: time });
     };
-    const command = createCommandHandler(engine, vi.fn(), record);
+    const command = createCommandHandler(engine, vi.fn(), record, () => timestamp);
     let frame: (timestamp: number) => void = () => {};
+    moveToValidPlacement(engine, command);
+    expect(command('Enter')).toBe(true);
     startAnimationLoop(
       engine,
       vi.fn(),
@@ -305,8 +306,6 @@ describe('session loop', () => {
       vi.fn(),
       (time) => record({ type: 'tick' }, time),
     );
-    moveToValidPlacement(engine, command);
-    expect(command('Enter')).toBe(true);
     for (let index = 1; index <= 96; index++) {
       timestamp = startedAt + (index * 1000) / 60;
       frame(timestamp);
@@ -332,7 +331,7 @@ describe('session loop', () => {
     const record = (event: ReplayEventInput, time = timestamp) => {
       replay.events.push({ ...event, t: getReplayTime(time, startedAt), clock: time });
     };
-    const command = createCommandHandler(engine, vi.fn(), record);
+    const command = createCommandHandler(engine, vi.fn(), record, () => timestamp);
     for (let carve = 0; carve < 3; carve++) {
       timestamp += 60.371;
       engine.tick(timestamp);
@@ -375,7 +374,7 @@ describe('session loop', () => {
     const record = (event: ReplayEventInput, time = timestamp) => {
       replay.events.push({ ...event, t: time, clock: time });
     };
-    const command = createCommandHandler(engine, vi.fn(), record);
+    const command = createCommandHandler(engine, vi.fn(), record, () => timestamp);
     const sync = vi.fn();
     expect(endStuckSession(engine, sync, record)).toBe(false);
     expect(replay.events).toHaveLength(1);

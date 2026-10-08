@@ -1,19 +1,21 @@
-import type { ComponentChildren, RefObject } from 'preact';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks';
+import { Component, type ComponentChildren, type RefObject } from 'preact';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'preact/hooks';
 
 import { drawGame, drawShapePreview } from './canvas';
 import { type GameSnapshot, ReverseTetrisEngine, type ShapeType } from './game';
 import {
+  prepareRecordedReplayDownload,
+  ReplayDownloadController,
+  type ReplayDownloadStatus,
+  ReplayRecording,
+} from './replay';
+import {
   bindSessionInterruptions,
-  captureReplayDownload,
   createCommandHandler,
   createKeyDownHandler,
-  createReplayLog,
   createSeededRng,
   endStuckSession,
-  getReplayTime,
   type ReplayEventInput,
-  type ReplayLog,
   setSessionPaused,
   startAnimationLoop,
   startEngine,
@@ -36,13 +38,17 @@ export interface CanvasRefs {
 /* v8 ignore start -- Browser hook wiring is covered by the smoke test; pure helpers are unit-tested. */
 export function App() {
   const rngRef = useRef<() => number>(() => Math.random());
-  const replayRef = useRef<ReplayLog>(createReplayLog());
-  const replayStartedAtRef = useRef(0);
+  const [replayRef] = useState(() => ({ current: new ReplayRecording() }));
   const engineRef = useRef<ReverseTetrisEngine | null>(null);
   if (!engineRef.current) engineRef.current = new ReverseTetrisEngine(() => rngRef.current());
   const engine = engineRef.current;
   const [state, setState] = useState<GameSnapshot>(() => engine.snapshot());
+  const isEscaping = state.activePiece !== null;
+  const holdShape = state.holdShapeType;
+  const nextOneShape = state.previewQueue[0] ?? null;
+  const nextTwoShape = state.previewQueue[1] ?? null;
   const [easyMode, setEasyMode] = useState(false);
+  const [downloadStatus, setDownloadStatus] = useState<ReplayDownloadStatus>('idle');
   const gameCanvas = useRef<HTMLCanvasElement>(null);
   const holdCanvas = useRef<HTMLCanvasElement>(null);
   const nextOneCanvas = useRef<HTMLCanvasElement>(null);
@@ -58,25 +64,34 @@ export function App() {
 
   const recordReplayEvent = useCallback(
     (event: ReplayEventInput, timestamp = performance.now()) => {
-      replayRef.current.events.push({
-        ...event,
-        t: getReplayTime(timestamp, replayStartedAtRef.current),
-        clock: timestamp,
-      });
+      replayRef.current.record(event, timestamp);
     },
     [],
   );
 
+  const replayDownload = useMemo(
+    () =>
+      new ReplayDownloadController(
+        (signal) =>
+          prepareRecordedReplayDownload(engine, replayRef.current, recordReplayEvent, signal),
+        downloadReplay,
+        setDownloadStatus,
+      ),
+    [engine, replayRef, recordReplayEvent],
+  );
+
+  useEffect(() => () => replayDownload.dispose(), [replayDownload]);
+
   const startMatch = useCallback(() => {
+    replayDownload.cancel();
     const seed = createReplaySeed();
     const options = { easyMode };
     const timestamp = performance.now();
     rngRef.current = createSeededRng(seed);
-    replayRef.current = createReplayLog(seed, options, undefined, timestamp);
-    replayStartedAtRef.current = timestamp;
+    replayRef.current = new ReplayRecording(seed, options, undefined, timestamp);
     startEngine(engine, syncState, () => timestamp, options);
     gameCanvas.current?.focus({ preventScroll: true });
-  }, [easyMode, engine, syncState, gameCanvas]);
+  }, [easyMode, engine, syncState, gameCanvas, replayDownload]);
 
   const togglePause = useCallback(() => {
     setSessionPaused(engine, engine.isPlaying(), syncState, undefined, recordReplayEvent);
@@ -96,17 +111,30 @@ export function App() {
   );
 
   const downloadCurrentReplay = useCallback(() => {
-    downloadReplay(captureReplayDownload(engine, replayRef.current, recordReplayEvent));
     if (engine.isPlaying()) gameCanvas.current?.focus({ preventScroll: true });
-  }, [engine, recordReplayEvent, gameCanvas]);
+    void replayDownload.start();
+  }, [engine, replayDownload, gameCanvas]);
 
   const endStuckEasyModeGame = useCallback(() => {
     endStuckSession(engine, syncState, recordReplayEvent);
   }, [engine, syncState, recordReplayEvent]);
 
-  useEffect(() => {
-    drawCanvases(state, canvasRefs);
-  }, [state, canvasRefs]);
+  // Draw with the DOM commit instead of waiting for passive effects after paint.
+  useLayoutEffect(() => {
+    drawGameCanvas(state, gameCanvas);
+  }, [state, gameCanvas]);
+
+  useLayoutEffect(() => {
+    drawPreviewCanvas(holdShape, holdCanvas);
+  }, [holdShape, holdCanvas]);
+
+  useLayoutEffect(() => {
+    drawPreviewCanvas(nextOneShape, nextOneCanvas);
+  }, [nextOneShape, nextOneCanvas]);
+
+  useLayoutEffect(() => {
+    drawPreviewCanvas(nextTwoShape, nextTwoCanvas);
+  }, [nextTwoShape, nextTwoCanvas]);
 
   useEffect(() => {
     const onKeyDown = createKeyDownHandler(engine, syncState, recordReplayEvent, togglePause);
@@ -120,7 +148,7 @@ export function App() {
   }, [engine, syncState, recordReplayEvent]);
 
   useEffect(() => {
-    if (state.gameState !== 'PLAYING') return;
+    if (state.gameState !== 'PLAYING' || !isEscaping) return;
 
     return startAnimationLoop(
       engine,
@@ -129,21 +157,24 @@ export function App() {
       cancelAnimationFrame,
       (timestamp) => recordReplayEvent({ type: 'tick' }, timestamp),
     );
-  }, [engine, recordReplayEvent, state.gameState]);
+  }, [engine, recordReplayEvent, state.gameState, isEscaping]);
 
   return (
-    <GameLayout
-      canvasRefs={canvasRefs}
-      overlay={getOverlayContent(state)}
-      easyMode={easyMode}
-      state={state}
-      status={getStatusPresentation(state)}
-      onDownloadReplay={downloadCurrentReplay}
-      onEndStuckEasyModeGame={endStuckEasyModeGame}
-      onEasyModeChange={setEasyMode}
-      onStart={state.gameState === 'PAUSED' ? togglePause : startMatch}
-      onTogglePause={togglePause}
-      onCommand={touchCommand}
+    <MemoizedGameLayout
+      {...getLayoutPresentation({
+        canvasRefs,
+        overlay: getOverlayContent(state),
+        easyMode,
+        downloadStatus,
+        state,
+        status: getStatusPresentation(state),
+        onDownloadReplay: downloadCurrentReplay,
+        onEndStuckEasyModeGame: endStuckEasyModeGame,
+        onEasyModeChange: setEasyMode,
+        onStart: state.gameState === 'PAUSED' ? togglePause : startMatch,
+        onTogglePause: togglePause,
+        onCommand: touchCommand,
+      })}
     />
   );
 }
@@ -153,6 +184,7 @@ export interface GameLayoutProps {
   canvasRefs: CanvasRefs;
   overlay: OverlayContent;
   easyMode: boolean;
+  downloadStatus?: ReplayDownloadStatus;
   state: GameSnapshot;
   status: StatusPresentation;
   onDownloadReplay: () => void;
@@ -163,29 +195,93 @@ export interface GameLayoutProps {
   onCommand?: (key: string) => void;
 }
 
-export function GameLayout({
+// Display values and stable callbacks let canvas-only changes skip the DOM tree.
+export function getLayoutPresentation({ state, overlay, status, ...controls }: GameLayoutProps) {
+  return {
+    ...controls,
+    gameState: state.gameState,
+    score: state.score,
+    level: state.level,
+    holdShapeType: state.holdShapeType,
+    nextShapes: state.previewQueue.join(' / '),
+    canEndStuckEasyModeGame:
+      state.gameState === 'PLAYING' && state.easyMode && state.noLegalCarveAfterHoldSwap,
+    overlayVisible: overlay.visible,
+    overlayTitle: overlay.title,
+    overlayTitleTone: overlay.titleTone,
+    overlayDescription: overlay.description,
+    overlayButtonLabel: overlay.buttonLabel,
+    statusText: status.text,
+    statusTone: status.tone,
+    statusPulsing: status.pulsing,
+  };
+}
+
+export function GameLayout(props: GameLayoutProps) {
+  return GameLayoutView(getLayoutPresentation(props));
+}
+
+export class MemoizedGameLayout extends Component<ReturnType<typeof getLayoutPresentation>> {
+  shouldComponentUpdate(next: ReturnType<typeof getLayoutPresentation>): boolean {
+    const keys = Object.keys(next) as Array<keyof typeof next>;
+    return (
+      keys.length !== Object.keys(this.props).length ||
+      keys.some((key) => next[key] !== this.props[key])
+    );
+  }
+
+  render() {
+    return GameLayoutView(this.props);
+  }
+}
+
+function GameLayoutView({
   canvasRefs,
-  overlay,
   easyMode,
-  state,
-  status,
+  downloadStatus = 'idle',
+  gameState,
+  score,
+  level,
+  holdShapeType,
+  nextShapes,
+  canEndStuckEasyModeGame,
+  overlayVisible,
+  overlayTitle,
+  overlayTitleTone,
+  overlayDescription,
+  overlayButtonLabel,
+  statusText,
+  statusTone,
+  statusPulsing,
   onDownloadReplay,
   onEndStuckEasyModeGame,
   onEasyModeChange,
   onStart,
   onTogglePause = () => {},
   onCommand = () => {},
-}: GameLayoutProps) {
+}: ReturnType<typeof getLayoutPresentation>) {
+  const overlay: OverlayContent = {
+    visible: overlayVisible,
+    title: overlayTitle,
+    titleTone: overlayTitleTone,
+    description: overlayDescription,
+    buttonLabel: overlayButtonLabel,
+  };
+  const status: StatusPresentation = {
+    text: statusText,
+    tone: statusTone,
+    pulsing: statusPulsing,
+  };
   return (
-    <main class="game-shell" data-state={state.gameState.toLowerCase()}>
+    <main class="game-shell" data-state={gameState.toLowerCase()}>
       <section class="game-frame" aria-label="Reverse Tetris game">
         <aside class="panel panel-left" aria-label="Stats and hold">
           <div class="metric-row">
-            <Metric label="Score" value={state.score} tone="cyan" />
-            <Metric label="Lvl" value={state.level} tone="purple" alignRight />
+            <Metric label="Score" value={score} tone="cyan" />
+            <Metric label="Lvl" value={level} tone="purple" alignRight />
           </div>
 
-          <PanelCanvas label="Hold (C/Shift)" type={state.holdShapeType}>
+          <PanelCanvas label="Hold (C/Shift)" type={holdShapeType}>
             <canvas ref={canvasRefs.hold} width="80" height="80" aria-label="Held shape" />
           </PanelCanvas>
 
@@ -203,19 +299,19 @@ export function GameLayout({
         <section class="board-column" aria-label="Game board and actions">
           <div class="game-toolbar">
             <span>
-              Score {state.score} · Lvl {state.level}
+              Score {score} · Lvl {level}
             </span>
             <button
               type="button"
               class="pause-button"
-              disabled={state.gameState !== 'PLAYING' && state.gameState !== 'PAUSED'}
+              disabled={gameState !== 'PLAYING' && gameState !== 'PAUSED'}
               onClick={onTogglePause}
             >
-              {state.gameState === 'PAUSED' ? 'Resume' : 'Pause'}
+              {gameState === 'PAUSED' ? 'Resume' : 'Pause'}
             </button>
           </div>
           <div class="board-shapes">
-            Hold {state.holdShapeType ?? '—'} · Next {state.previewQueue.join(' / ')}
+            Hold {holdShapeType ?? '—'} · Next {nextShapes}
           </div>
           <div class="board-status">
             <StatusBlock status={status} />
@@ -234,10 +330,10 @@ export function GameLayout({
               easyMode={easyMode}
               onEasyModeChange={onEasyModeChange}
               onStart={onStart}
-              paused={state.gameState === 'PAUSED'}
+              paused={gameState === 'PAUSED'}
             />
           </div>
-          <TouchControls disabled={state.gameState !== 'PLAYING'} onCommand={onCommand} />
+          <TouchControls disabled={gameState !== 'PLAYING'} onCommand={onCommand} />
         </section>
 
         <aside class="panel panel-right" aria-label="Next shapes and controls">
@@ -256,9 +352,8 @@ export function GameLayout({
           </div>
 
           <ControlList
-            canEndStuckEasyModeGame={
-              state.gameState === 'PLAYING' && state.easyMode && state.noLegalCarveAfterHoldSwap
-            }
+            canEndStuckEasyModeGame={canEndStuckEasyModeGame}
+            downloadStatus={downloadStatus}
             onDownloadReplay={onDownloadReplay}
             onEndStuckEasyModeGame={onEndStuckEasyModeGame}
           />
@@ -387,10 +482,12 @@ export function TouchControls({
 
 export function ControlList({
   canEndStuckEasyModeGame = false,
+  downloadStatus = 'idle',
   onDownloadReplay = () => {},
   onEndStuckEasyModeGame = () => {},
 }: {
   canEndStuckEasyModeGame?: boolean;
+  downloadStatus?: ReplayDownloadStatus;
   onDownloadReplay?: () => void;
   onEndStuckEasyModeGame?: () => void;
 } = {}) {
@@ -405,8 +502,13 @@ export function ControlList({
           </li>
         ))}
       </ul>
-      <button type="button" class="replay-button" onClick={onDownloadReplay}>
-        Download replay
+      <button
+        type="button"
+        class="replay-button"
+        disabled={downloadStatus === 'preparing'}
+        onClick={onDownloadReplay}
+      >
+        {downloadStatus === 'preparing' ? 'Preparing replay…' : 'Download replay'}
       </button>
       {canEndStuckEasyModeGame ? (
         <button
@@ -417,6 +519,9 @@ export function ControlList({
           End game
         </button>
       ) : null}
+      {downloadStatus === 'failed' ? (
+        <p role="alert">Could not prepare replay. Try again.</p>
+      ) : null}
     </div>
   );
 }
@@ -425,32 +530,26 @@ function createReplaySeed(): number {
   return Math.floor(Math.random() * 0x100000000);
 }
 
-function downloadReplay(serializedReplay: string): void {
-  const blob = new Blob([serializedReplay], {
-    type: 'application/json',
-  });
+function downloadReplay(blob: Blob): void {
   const url = URL.createObjectURL(blob);
-  const link = document.createElement('a');
-  link.href = url;
-  link.download = `sirtet-replay-${new Date().toISOString().replace(/[:.]/g, '-')}.json`;
-  link.click();
-  URL.revokeObjectURL(url);
+  try {
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `sirtet-replay-${new Date().toISOString().replace(/[:.]/g, '-')}.json`;
+    link.click();
+  } finally {
+    URL.revokeObjectURL(url);
+  }
 }
 
-export function drawCanvases(state: GameSnapshot, refs: CanvasRefs): void {
-  const game = refs.game.current;
-  const hold = refs.hold.current;
-  const nextOne = refs.nextOne.current;
-  const nextTwo = refs.nextTwo.current;
-  const gameContext = game?.getContext('2d');
-  const holdContext = hold?.getContext('2d');
-  const nextOneContext = nextOne?.getContext('2d');
-  const nextTwoContext = nextTwo?.getContext('2d');
+export function drawGameCanvas(state: GameSnapshot, ref: RefObject<HTMLCanvasElement>): void {
+  const canvas = ref.current;
+  const context = canvas?.getContext('2d');
+  if (canvas && context) drawGame(context, canvas, state);
+}
 
-  if (game && gameContext) drawGame(gameContext, game, state);
-  if (hold && holdContext) drawShapePreview(state.holdShapeType, holdContext, hold);
-  if (nextOne && nextOneContext)
-    drawShapePreview(state.previewQueue[0] ?? null, nextOneContext, nextOne);
-  if (nextTwo && nextTwoContext)
-    drawShapePreview(state.previewQueue[1] ?? null, nextTwoContext, nextTwo);
+export function drawPreviewCanvas(type: ShapeType | null, ref: RefObject<HTMLCanvasElement>): void {
+  const canvas = ref.current;
+  const context = canvas?.getContext('2d');
+  if (canvas && context) drawShapePreview(type, context, canvas);
 }

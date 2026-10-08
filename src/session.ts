@@ -73,9 +73,13 @@ export function createCommandHandler(
   engine: ReverseTetrisEngine,
   syncState: () => void,
   recordReplayEvent?: ReplayRecorder,
+  now = () => performance.now(),
 ) {
   return (key: string, code = '') => {
     if (!engine.isPlaying() || !shouldPreventKey(key, code)) return false;
+    // Idle sessions have no animation callbacks. Start the next escape from
+    // this command's clock, so time spent choosing a carve never catches up.
+    if (!engine.isEscaping()) engine.tick(now());
     if (recordReplayEvent) recordReplayBoundary(engine, recordReplayEvent);
     const accepted = engine.handleKey(key, code);
     recordReplayEvent?.({ type: 'key', key, code, accepted });
@@ -89,8 +93,9 @@ export function createKeyDownHandler(
   syncState: () => void,
   recordReplayEvent?: ReplayRecorder,
   togglePause?: () => void,
+  now = () => performance.now(),
 ) {
-  const command = createCommandHandler(engine, syncState, recordReplayEvent);
+  const command = createCommandHandler(engine, syncState, recordReplayEvent, now);
   return (event: KeyboardEventLike) => {
     const target = event.target as Element | null | undefined;
     if (
@@ -164,9 +169,9 @@ export function startAnimationLoop(
     // Keep the same floating-point accumulation order as live animation.
     // Timer-only active frames matter to exact replay, even without a redraw.
     if (wasEscaping) recordTick?.(timestamp);
-    if (!stopped && engine.isPlaying()) frame = requestFrame(loop);
+    if (!stopped && engine.isEscaping()) frame = requestFrame(loop);
   };
-  if (engine.isPlaying()) frame = requestFrame(loop);
+  if (engine.isEscaping()) frame = requestFrame(loop);
   return () => {
     stopped = true;
     cancelFrame(frame);
@@ -200,10 +205,10 @@ export function createReplayLog(
 }
 
 export function buildReplayDownload(replay: ReplayLog, snapshot: GameSnapshot): string {
-  return JSON.stringify({ ...replay, snapshot }, null, 2);
+  return JSON.stringify({ ...replay, snapshot });
 }
 
-function recordReplayBoundary(
+export function recordReplayBoundary(
   engine: ReverseTetrisEngine,
   recordReplayEvent: ReplayRecorder,
 ): void {
