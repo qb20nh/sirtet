@@ -30,22 +30,35 @@ locally.
 
 Touch controls appear on narrow screens and devices with a coarse pointer. Each
 tap performs one action. The board gets keyboard focus after starting, resuming,
-or using a touch control. Buttons and form fields retain their native keyboard
-behavior; held keys repeat movement but do not repeatedly carve, rotate or hold.
+using a touch control, or downloading a replay during play. Buttons and form
+fields retain their native keyboard behavior; held keys repeat movement but do
+not repeatedly carve, rotate or hold.
 
 Switching away from the window or hiding the document pauses the run. Resume is
 explicit and preserves the board, queue, score and partially elapsed animation
 step. Reloading the page starts a fresh session; runs are not saved to storage.
 Restart after a loss or win resets the run and starts a new replay.
 
-Download replay exports JSON for the current run. Version 2 records the random
-seed, mode, inputs (including whether they were accepted), visible animation
-ticks, pause/resume events, and final snapshot. Times are milliseconds relative
-to start. To reconstruct a run, initialize `ReverseTetrisEngine` with
-`createSeededRng(seed)` and apply events in order: `start(t, options)`,
-`handleKey(key, code)`, `tick(t)`, `pause()`, and `resume(t)`. Pause includes a
-preceding tick to preserve the partial animation step. There is no replay import
-UI. See the deterministic reconstruction test in `test/session.test.ts`.
+Download replay exports JSON for the current run. Version 3 records the random
+seed, mode, accepted and rejected inputs, animation ticks, pause/resume, an
+explicit end of a stuck easy run, and the final snapshot. `t` is fractional
+milliseconds relative to start for display; `clock` retains the original engine
+timestamp. To reconstruct a run, initialize
+`ReverseTetrisEngine` with `createSeededRng(seed)` and apply events in array order:
+`start(clock, options)`, `handleKey(key, code)`, `tick(clock)`, `pause()`, `resume(clock)`, or
+`endStuckEasyModeGame()` for `end-stuck`.
+
+Before input and export, the log captures the last processed engine tick without
+advancing the live game. This preserves time spent waiting before the first
+carve. While a piece escapes, every tick is recorded to reproduce the exact
+floating-point timer updates at step boundaries. This can add about 60 events
+per second on a 60 Hz display; idle frames still add none. Boundary ticks may
+repeat or precede a key's timestamp; do not sort events by time, rebase `clock`,
+or advance the engine for key events. Version 2 files lack these timings and
+cannot always reconstruct a run. Version 3 also uses an explicit seeded bag
+shuffle; reconstruction requires the engine's version 3 rules, not the earlier
+runtime-dependent random sort. There is no replay import UI. See
+`test/session.test.ts` for reconstruction and interruption regressions.
 
 ## Architecture
 
@@ -70,11 +83,26 @@ pnpm test:session # idle-frame budget, timing, interruption/input and replay reg
 pnpm test         # mechanics, UI and session tests
 pnpm quality      # types, lint, coverage, unused code and duplication gates
 pnpm build
+pnpm benchmark:idle # compare original main with the current working tree
 ```
 
 The idle-frame test runs 600 callbacks and asserts zero snapshots, publications
 and replay ticks. Its printed elapsed time is a diagnostic, not a stable timing
 threshold. Use the same Node version and machine for timing comparisons.
+
+The benchmark loads the actual engine and loop from Git, runs the same 600 idle
+callbacks for both revisions, and emits JSON with source hashes, environment,
+operation counts and raw timing samples. It uses five warmups and nine alternating
+rounds of twenty samples. To compare committed revisions and retain evidence:
+
+```sh
+pnpm benchmark:idle dbb0f9942fa374a04d1ad746de5a87ac8513d8db HEAD > /tmp/sirtet-idle.log
+```
+
+For JSON without pnpm's command banner, run `node scripts/benchmark-idle.mjs`
+with the same arguments. Timings cover instrumented Node callback work; they do
+not establish browser frame rate, input latency or battery savings. Both loops
+still request animation frames while playing.
 
 Before shipping, check these behaviors in a real browser:
 
