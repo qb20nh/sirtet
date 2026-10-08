@@ -205,7 +205,7 @@ export function createReplayLog(
 }
 
 export function buildReplayDownload(replay: ReplayLog, snapshot: GameSnapshot): string {
-  return JSON.stringify({ ...replay, snapshot }, null, 2);
+  return JSON.stringify({ ...replay, snapshot });
 }
 
 function recordReplayBoundary(
