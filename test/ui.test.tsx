@@ -236,7 +236,7 @@ describe('UI helpers and layout', () => {
     );
 
     expect(replay).toMatchObject({
-      version: 2,
+      version: 3,
       seed: 123,
       options: { easyMode: true },
       snapshot: { easyMode: true, gameState: 'PLAYING' },
@@ -244,6 +244,7 @@ describe('UI helpers and layout', () => {
     expect(replay.events[0]).toEqual({
       type: 'start',
       t: 0,
+      clock: 0,
       seed: 123,
       options: { easyMode: true },
     });

@@ -1357,6 +1357,14 @@ export class ReverseTetrisEngine {
     return this.state.gameState === 'PLAYING';
   }
 
+  getTickTimestamp(): number {
+    return this.state.lastTime;
+  }
+
+  isEscaping(): boolean {
+    return this.isPlaying() && this.state.activePiece !== null;
+  }
+
   pause(): boolean {
     if (!this.isPlaying()) return false;
     this.state.gameState = 'PAUSED';

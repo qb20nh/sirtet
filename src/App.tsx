@@ -5,11 +5,12 @@ import { drawGame, drawShapePreview } from './canvas';
 import { type GameSnapshot, ReverseTetrisEngine, type ShapeType } from './game';
 import {
   bindSessionInterruptions,
-  buildReplayDownload,
+  captureReplayDownload,
   createCommandHandler,
   createKeyDownHandler,
   createReplayLog,
   createSeededRng,
+  endStuckSession,
   getReplayTime,
   type ReplayEventInput,
   type ReplayLog,
@@ -55,19 +56,23 @@ export function App() {
     setState(engine.snapshot());
   }, [engine]);
 
-  const recordReplayEvent = useCallback((event: ReplayEventInput, timestamp: number) => {
-    replayRef.current.events.push({
-      ...event,
-      t: getReplayTime(timestamp, replayStartedAtRef.current),
-    });
-  }, []);
+  const recordReplayEvent = useCallback(
+    (event: ReplayEventInput, timestamp = performance.now()) => {
+      replayRef.current.events.push({
+        ...event,
+        t: getReplayTime(timestamp, replayStartedAtRef.current),
+        clock: timestamp,
+      });
+    },
+    [],
+  );
 
   const startMatch = useCallback(() => {
     const seed = createReplaySeed();
     const options = { easyMode };
     const timestamp = performance.now();
     rngRef.current = createSeededRng(seed);
-    replayRef.current = createReplayLog(seed, options);
+    replayRef.current = createReplayLog(seed, options, undefined, timestamp);
     replayStartedAtRef.current = timestamp;
     startEngine(engine, syncState, () => timestamp, options);
     gameCanvas.current?.focus({ preventScroll: true });
@@ -79,10 +84,7 @@ export function App() {
   }, [engine, syncState, recordReplayEvent, gameCanvas]);
 
   const command = useMemo(
-    () =>
-      createCommandHandler(engine, syncState, (event) =>
-        recordReplayEvent(event, performance.now()),
-      ),
+    () => createCommandHandler(engine, syncState, recordReplayEvent),
     [engine, syncState, recordReplayEvent],
   );
   const touchCommand = useCallback(
@@ -94,26 +96,20 @@ export function App() {
   );
 
   const downloadCurrentReplay = useCallback(() => {
-    downloadReplay(replayRef.current, engine.snapshot());
-  }, [engine]);
+    downloadReplay(captureReplayDownload(engine, replayRef.current, recordReplayEvent));
+    if (engine.isPlaying()) gameCanvas.current?.focus({ preventScroll: true });
+  }, [engine, recordReplayEvent, gameCanvas]);
 
   const endStuckEasyModeGame = useCallback(() => {
-    if (engine.endStuckEasyModeGame()) {
-      syncState();
-    }
-  }, [engine, syncState]);
+    endStuckSession(engine, syncState, recordReplayEvent);
+  }, [engine, syncState, recordReplayEvent]);
 
   useEffect(() => {
     drawCanvases(state, canvasRefs);
   }, [state, canvasRefs]);
 
   useEffect(() => {
-    const onKeyDown = createKeyDownHandler(
-      engine,
-      syncState,
-      (event) => recordReplayEvent(event, performance.now()),
-      togglePause,
-    );
+    const onKeyDown = createKeyDownHandler(engine, syncState, recordReplayEvent, togglePause);
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [engine, recordReplayEvent, syncState, togglePause]);
@@ -429,8 +425,8 @@ function createReplaySeed(): number {
   return Math.floor(Math.random() * 0x100000000);
 }
 
-function downloadReplay(replay: ReplayLog, snapshot: GameSnapshot): void {
-  const blob = new Blob([buildReplayDownload(replay, snapshot)], {
+function downloadReplay(serializedReplay: string): void {
+  const blob = new Blob([serializedReplay], {
     type: 'application/json',
   });
   const url = URL.createObjectURL(blob);

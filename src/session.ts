@@ -5,15 +5,17 @@ import {
   shouldPreventKey,
 } from './game';
 
-type ReplayEvent = ReplayEventInput & { t: number };
+type ReplayEvent = ReplayEventInput & { t: number; clock: number };
 
 export type ReplayEventInput =
   | { type: 'start'; seed: number; options: GameStartOptions }
   | { type: 'key'; key: string; code: string; accepted: boolean }
-  | { type: 'tick' | 'pause' | 'resume' };
+  | { type: 'tick' | 'pause' | 'resume' | 'end-stuck' };
+
+type ReplayRecorder = (event: ReplayEventInput, timestamp?: number) => void;
 
 export interface ReplayLog {
-  version: 2;
+  version: 3;
   createdAt: string;
   seed: number | null;
   options: GameStartOptions;
@@ -70,10 +72,11 @@ export function startEngine(
 export function createCommandHandler(
   engine: ReverseTetrisEngine,
   syncState: () => void,
-  recordReplayEvent?: (event: ReplayEventInput) => void,
+  recordReplayEvent?: ReplayRecorder,
 ) {
   return (key: string, code = '') => {
     if (!engine.isPlaying() || !shouldPreventKey(key, code)) return false;
+    if (recordReplayEvent) recordReplayBoundary(engine, recordReplayEvent);
     const accepted = engine.handleKey(key, code);
     recordReplayEvent?.({ type: 'key', key, code, accepted });
     if (accepted) syncState();
@@ -84,7 +87,7 @@ export function createCommandHandler(
 export function createKeyDownHandler(
   engine: ReverseTetrisEngine,
   syncState: () => void,
-  recordReplayEvent?: (event: ReplayEventInput) => void,
+  recordReplayEvent?: ReplayRecorder,
   togglePause?: () => void,
 ) {
   const command = createCommandHandler(engine, syncState, recordReplayEvent);
@@ -154,10 +157,13 @@ export function startAnimationLoop(
   let stopped = false;
   const loop = (timestamp: number) => {
     if (stopped) return;
+    const wasEscaping = engine.isEscaping();
     if (engine.tick(timestamp)) {
       setState(engine.snapshot());
-      recordTick?.(timestamp);
     }
+    // Keep the same floating-point accumulation order as live animation.
+    // Timer-only active frames matter to exact replay, even without a redraw.
+    if (wasEscaping) recordTick?.(timestamp);
     if (!stopped && engine.isPlaying()) frame = requestFrame(loop);
   };
   if (engine.isPlaying()) frame = requestFrame(loop);
@@ -182,13 +188,14 @@ export function createReplayLog(
   seed: number | null = null,
   options: GameStartOptions = {},
   createdAt = new Date().toISOString(),
+  startedAt = 0,
 ): ReplayLog {
   return {
-    version: 2,
+    version: 3,
     createdAt,
     seed,
     options,
-    events: seed === null ? [] : [{ type: 'start', t: 0, seed, options }],
+    events: seed === null ? [] : [{ type: 'start', t: 0, clock: startedAt, seed, options }],
   };
 }
 
@@ -196,6 +203,38 @@ export function buildReplayDownload(replay: ReplayLog, snapshot: GameSnapshot): 
   return JSON.stringify({ ...replay, snapshot }, null, 2);
 }
 
+function recordReplayBoundary(
+  engine: ReverseTetrisEngine,
+  recordReplayEvent: ReplayRecorder,
+): void {
+  // Silent frames still advance the engine clock. Preserve that boundary before
+  // a command can create or replace a piece, without advancing the live game.
+  recordReplayEvent({ type: 'tick' }, engine.getTickTimestamp());
+}
+
+export function captureReplayDownload(
+  engine: ReverseTetrisEngine,
+  replay: ReplayLog,
+  recordReplayEvent: ReplayRecorder,
+): string {
+  if (replay.seed !== null) recordReplayBoundary(engine, recordReplayEvent);
+  return buildReplayDownload(replay, engine.snapshot());
+}
+
+export function endStuckSession(
+  engine: ReverseTetrisEngine,
+  syncState: () => void,
+  recordReplayEvent?: ReplayRecorder,
+): boolean {
+  if (!engine.endStuckEasyModeGame()) return false;
+  if (recordReplayEvent) {
+    recordReplayBoundary(engine, recordReplayEvent);
+    recordReplayEvent({ type: 'end-stuck' });
+  }
+  syncState();
+  return true;
+}
+
 export function getReplayTime(timestamp: number, startedAt: number): number {
-  return Math.max(0, Math.round(timestamp - startedAt));
+  return Math.max(0, timestamp - startedAt);
 }

@@ -3,12 +3,16 @@ import { describe, expect, it, vi } from 'vitest';
 import { ReverseTetrisEngine } from '../src/game';
 import {
   bindSessionInterruptions,
+  captureReplayDownload,
   createCommandHandler,
   createKeyDownHandler,
   createReplayLog,
   createSeededRng,
+  endStuckSession,
   getReplayTime,
   type KeyboardEventLike,
+  type ReplayEventInput,
+  type ReplayLog,
   setSessionPaused,
   startAnimationLoop,
 } from '../src/session';
@@ -91,6 +95,7 @@ describe('session loop', () => {
     callbacks[0](delay / 2);
     expect(snapshot).not.toHaveBeenCalled();
     expect(publish).not.toHaveBeenCalled();
+    expect(recordTick).toHaveBeenCalledWith(delay / 2);
     callbacks[1](delay);
     expect(snapshot).toHaveBeenCalledOnce();
     expect(publish).toHaveBeenCalledOnce();
@@ -198,7 +203,8 @@ describe('session loop', () => {
     handler({ key: 'W', code: 'KeyW', repeat: true, preventDefault });
     expect(preventDefault).toHaveBeenCalledOnce();
     expect(handleKey).toHaveBeenCalledWith('W', 'KeyW');
-    expect(record).toHaveBeenCalledOnce();
+    expect(record).toHaveBeenCalledTimes(2);
+    expect(record.mock.calls[0]).toEqual([{ type: 'tick' }, engine.getTickTimestamp()]);
     engine.pause();
     const pausedDefault = vi.fn();
     handler({ key: 'ArrowUp', code: 'ArrowUp', preventDefault: pausedDefault });
@@ -222,27 +228,17 @@ describe('session loop', () => {
     expect(toggle).toHaveBeenCalledTimes(2);
   });
 
-  it('reconstructs the same run from v2 replay events across a long pause', () => {
+  it('reconstructs the same run from replay events across a long pause', () => {
     const seed = 123;
-    const probe = new ReverseTetrisEngine(createSeededRng(seed));
-    probe.start();
-    const placement = moveToValidPlacement(probe);
     const engine = new ReverseTetrisEngine(createSeededRng(seed));
     engine.start(1000);
-    const replay = createReplayLog(seed);
+    const replay = createReplayLog(seed, {}, undefined, 1000);
     let timestamp = 1000;
-    const record = (
-      event: Parameters<NonNullable<Parameters<typeof setSessionPaused>[4]>>[0],
-      time = timestamp,
-    ) => {
-      replay.events.push({ ...event, t: getReplayTime(time, 1000) });
+    const record = (event: ReplayEventInput, time = timestamp) => {
+      replay.events.push({ ...event, t: getReplayTime(time, 1000), clock: time });
     };
     const command = createCommandHandler(engine, vi.fn(), record);
-    while (engine.snapshot().currentRotation !== placement.r) command('x');
-    while (engine.snapshot().mouseX > placement.x) command('ArrowLeft');
-    while (engine.snapshot().mouseX < placement.x) command('ArrowRight');
-    while (engine.snapshot().mouseY > placement.y) command('ArrowUp');
-    while (engine.snapshot().mouseY < placement.y) command('ArrowDown');
+    moveToValidPlacement(engine, command);
     expect(command('Enter')).toBe(true);
     timestamp = 1111;
     setSessionPaused(engine, true, vi.fn(), () => timestamp, record);
@@ -252,19 +248,167 @@ describe('session loop', () => {
     engine.tick(timestamp);
     record({ type: 'tick' });
 
-    const reconstructed = new ReverseTetrisEngine(createSeededRng(seed));
-    for (const event of replay.events) {
-      if (event.type === 'start') reconstructed.start(event.t, event.options);
-      if (event.type === 'key') reconstructed.handleKey(event.key, event.code);
-      if (event.type === 'tick') reconstructed.tick(event.t);
-      if (event.type === 'pause') reconstructed.pause();
-      if (event.type === 'resume') reconstructed.resume(event.t);
-    }
-    expect(reconstructed.snapshot()).toEqual(engine.snapshot());
+    expect(reconstructReplay(replay).snapshot()).toEqual(engine.snapshot());
     expect(getReplayTime(999, 1000)).toBe(0);
-    expect(getReplayTime(1001.7, 1000)).toBe(2);
+    expect(getReplayTime(1001.7, 1000)).toBe(1001.7 - 1000);
+  });
+
+  it('reconstructs a delayed first carve after idle animation frames', () => {
+    const seed = 123;
+    const engine = new ReverseTetrisEngine(createSeededRng(seed));
+    engine.start(0);
+    const replay = createReplayLog(seed);
+    let timestamp = 0;
+    const record = (event: ReplayEventInput, time = timestamp) => {
+      replay.events.push({ ...event, t: getReplayTime(time, 0), clock: time });
+    };
+    const command = createCommandHandler(engine, vi.fn(), record);
+    let frame: (timestamp: number) => void = () => {};
+    startAnimationLoop(
+      engine,
+      vi.fn(),
+      (callback) => {
+        frame = callback;
+        return 1;
+      },
+      vi.fn(),
+      (time) => record({ type: 'tick' }, time),
+    );
+    for (timestamp = 16; timestamp <= 10_000; timestamp += 16) frame(timestamp);
+    timestamp = 10_000;
+    moveToValidPlacement(engine, command);
+    expect(command('Enter')).toBe(true);
+    frame(10_400);
+
+    expect(reconstructReplay(replay).snapshot()).toEqual(engine.snapshot());
+  });
+
+  it('preserves each fractional frame at an escape-step boundary', () => {
+    const startedAt = 1000.1;
+    const seed = 1;
+    const engine = new ReverseTetrisEngine(createSeededRng(seed));
+    engine.start(startedAt, { easyMode: true });
+    const replay = createReplayLog(seed, { easyMode: true }, undefined, startedAt);
+    let timestamp = startedAt;
+    const record = (event: ReplayEventInput, time = timestamp) => {
+      replay.events.push({ ...event, t: getReplayTime(time, startedAt), clock: time });
+    };
+    const command = createCommandHandler(engine, vi.fn(), record);
+    let frame: (timestamp: number) => void = () => {};
+    startAnimationLoop(
+      engine,
+      vi.fn(),
+      (callback) => {
+        frame = callback;
+        return 1;
+      },
+      vi.fn(),
+      (time) => record({ type: 'tick' }, time),
+    );
+    moveToValidPlacement(engine, command);
+    expect(command('Enter')).toBe(true);
+    for (let index = 1; index <= 96; index++) {
+      timestamp = startedAt + (index * 1000) / 60;
+      frame(timestamp);
+    }
+    const exported = JSON.parse(captureReplayDownload(engine, replay, record));
+    expect(engine.snapshot().activePiece?.pathIndex).toBe(4);
+    expect(reconstructReplay(exported).snapshot()).toEqual(engine.snapshot());
+    command('ArrowRight');
+    expect(reconstructReplay(replay).snapshot()).toEqual(engine.snapshot());
+    timestamp = startedAt + (97 * 1000) / 60;
+    frame(timestamp);
+    expect(engine.snapshot().activePiece?.pathIndex).toBe(5);
+    expect(reconstructReplay(replay).snapshot()).toEqual(engine.snapshot());
+  });
+
+  it('exports the exact partial step across fractional clocks, rapid commands and a long pause', () => {
+    const startedAt = 1000.137;
+    const seed = 123;
+    const engine = new ReverseTetrisEngine(createSeededRng(seed));
+    engine.start(startedAt, { easyMode: true });
+    const replay = createReplayLog(seed, { easyMode: true }, undefined, startedAt);
+    let timestamp = startedAt;
+    const record = (event: ReplayEventInput, time = timestamp) => {
+      replay.events.push({ ...event, t: getReplayTime(time, startedAt), clock: time });
+    };
+    const command = createCommandHandler(engine, vi.fn(), record);
+    for (let carve = 0; carve < 3; carve++) {
+      timestamp += 60.371;
+      engine.tick(timestamp);
+      moveToValidPlacement(engine, command);
+      expect(command('Enter')).toBe(true);
+      const immediateExport = JSON.parse(captureReplayDownload(engine, replay, record));
+      expect(reconstructReplay(immediateExport).snapshot()).toEqual(engine.snapshot());
+    }
+    timestamp += 37.627;
+    expect(setSessionPaused(engine, true, vi.fn(), () => timestamp, record)).toBe(true);
+    timestamp += 60_000.251;
+    expect(setSessionPaused(engine, false, vi.fn(), () => timestamp, record)).toBe(true);
+    timestamp += 15.873;
+    expect(engine.tick(timestamp)).toBe(false);
+    const beforeExport = engine.snapshot();
+    const exported = JSON.parse(captureReplayDownload(engine, replay, record));
+    expect(engine.snapshot()).toEqual(beforeExport);
+    expect(exported.snapshot).toEqual(beforeExport);
+    expect(reconstructReplay(exported).snapshot()).toEqual(beforeExport);
+    expect(exported.events.at(-1)).toEqual({
+      type: 'tick',
+      t: timestamp - startedAt,
+      clock: timestamp,
+    });
+
+    const ready = new ReverseTetrisEngine();
+    const emptyReplay = createReplayLog();
+    const recordReady = vi.fn();
+    const emptyExport = JSON.parse(captureReplayDownload(ready, emptyReplay, recordReady));
+    expect(recordReady).not.toHaveBeenCalled();
+    expect(emptyExport.events).toEqual([]);
+  });
+
+  it('records an explicit end for a naturally stuck easy run', () => {
+    const seed = 1;
+    const engine = new ReverseTetrisEngine(createSeededRng(seed));
+    engine.start(0, { easyMode: true });
+    const replay = createReplayLog(seed, { easyMode: true });
+    let timestamp = 0;
+    const record = (event: ReplayEventInput, time = timestamp) => {
+      replay.events.push({ ...event, t: time, clock: time });
+    };
+    const command = createCommandHandler(engine, vi.fn(), record);
+    const sync = vi.fn();
+    expect(endStuckSession(engine, sync, record)).toBe(false);
+    expect(replay.events).toHaveLength(1);
+    for (let carve = 0; carve < 10 && !engine.snapshot().noLegalCarveAfterHoldSwap; carve++) {
+      timestamp += 100.5;
+      engine.tick(timestamp);
+      if (!engine.snapshot().currentShapeHasLegalCarve) command('c');
+      moveToValidPlacement(engine, command);
+      expect(command('Enter')).toBe(true);
+    }
+    expect(engine.snapshot().noLegalCarveAfterHoldSwap).toBe(true);
+    expect(endStuckSession(engine, sync, record)).toBe(true);
+    expect(sync).toHaveBeenCalledOnce();
+    expect(replay.events.at(-1)?.type).toBe('end-stuck');
+    expect(reconstructReplay(replay).snapshot()).toEqual(engine.snapshot());
+    expect(endStuckSession(engine, sync, record)).toBe(false);
+    const unrecorded = reconstructReplay({ ...replay, events: replay.events.slice(0, -1) });
+    expect(endStuckSession(unrecorded, sync)).toBe(true);
   });
 });
+
+function reconstructReplay(replay: ReplayLog) {
+  const engine = new ReverseTetrisEngine(createSeededRng(replay.seed ?? 0));
+  for (const event of replay.events) {
+    if (event.type === 'start') engine.start(event.clock, event.options);
+    if (event.type === 'key') expect(engine.handleKey(event.key, event.code)).toBe(event.accepted);
+    if (event.type === 'tick') engine.tick(event.clock);
+    if (event.type === 'pause') engine.pause();
+    if (event.type === 'resume') engine.resume(event.clock);
+    if (event.type === 'end-stuck') engine.endStuckEasyModeGame();
+  }
+  return engine;
+}
 
 function createCarvedEngine() {
   const engine = new ReverseTetrisEngine(() => 0.5);
