@@ -1713,7 +1713,8 @@ export class ReverseTetrisEngine {
 
   private getNextShape(previousShape: ShapeType | null): ShapeType {
     if (this.state.shapeBag.length === 0) {
-      this.state.shapeBag = [...SHAPE_KEYS].sort(() => this.rng() - 0.5);
+      this.state.shapeBag = [...SHAPE_KEYS];
+      shuffleInPlace(this.state.shapeBag, this.rng);
 
       if (this.state.isFirstBag) {
         moveShapeToBagFront(this.state.shapeBag, 'S');
