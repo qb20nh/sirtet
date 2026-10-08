@@ -39,9 +39,10 @@ explicit and preserves the board, queue, score and partially elapsed animation
 step. Reloading the page starts a fresh session; runs are not saved to storage.
 Restart after a loss or win resets the run and starts a new replay.
 
-Download replay exports JSON for the current run. Version 3 records the random
-seed, mode, accepted and rejected inputs, animation ticks, pause/resume, an
-explicit end of a stuck easy run, and the final snapshot. `t` is fractional
+Download replay exports compact JSON for the current run, retaining every event
+and timestamp. Format it in a JSON editor when inspecting it manually. Version 3
+records the random seed, mode, accepted and rejected inputs, animation ticks,
+pause/resume, an explicit end of a stuck easy run, and the final snapshot. `t` is fractional
 milliseconds relative to start for display; `clock` retains the original engine
 timestamp. To reconstruct a run, initialize
 `ReverseTetrisEngine` with `createSeededRng(seed)` and apply events in array order:
@@ -76,7 +77,8 @@ The loop requests frames only while a piece is escaping. Idle input rebases the
 clock, and the App starts scheduling when a carve creates an active piece.
 Intermediate timer increments do not redraw the canvases. Pause freezes the
 clock; resume rebases it to the supplied timestamp. The App keeps the engine
-in a stable ref so hot updates retain its session.
+in a stable ref so hot updates retain its session. Canvas drawing runs before the
+next paint opportunity; hold/next previews update only when their shape changes.
 
 ## Checks
 
@@ -110,7 +112,9 @@ simulated scheduler; zero callbacks measures harness overhead. Engine timings
 measure synchronous workload execution. Neither establishes browser frame rate,
 input-to-paint latency or battery savings. See
 [the performance report](goals/improve-sirtet-performance-report.md) for measured
-results, browser checks and remaining limitations.
+results, browser checks and remaining limitations. The subsequent
+[efficiency continuation](goals/improve-sirtet-efficiency-report.md) compares against
+`64b4c82` and covers drawing latency, search, replay export and asset generation.
 
 Before shipping, check these behaviors in a real browser:
 
