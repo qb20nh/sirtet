@@ -288,10 +288,25 @@ describe('UI helpers and layout', () => {
     );
     expect(queuedLayout.shouldComponentUpdate(presentation(escaping))).toBe(true);
     expect(layout.shouldComponentUpdate({ ...original, easyMode: true })).toBe(true);
+    expect(layout.shouldComponentUpdate({ ...original, downloadStatus: 'preparing' })).toBe(true);
+    expect(layout.shouldComponentUpdate({ ...original, downloadStatus: 'failed' })).toBe(true);
     expect(layout.shouldComponentUpdate({ ...original, onCommand: vi.fn() })).toBe(true);
     const withoutTouchHandler = { ...original };
     delete withoutTouchHandler.onCommand;
     expect(layout.shouldComponentUpdate(withoutTouchHandler)).toBe(true);
+  });
+
+  it('disables replay downloads while preparing and exposes a retryable failure', () => {
+    const busy = ControlList({ downloadStatus: 'preparing' });
+    expect(busy.props.children[2].props.disabled).toBe(true);
+    expect(busy.props.children[2].props.children).toBe('Preparing replay…');
+    expect(busy.props.children[4]).toBeNull();
+    const failed = ControlList({ downloadStatus: 'failed' });
+    expect(failed.props.children[2].props.disabled).toBe(false);
+    expect(failed.props.children[2].props.children).toBe('Download replay');
+    expect(failed.props.children[4].props.role).toBe('alert');
+    expect(failed.props.children[4].props.children).toBe('Could not prepare replay. Try again.');
+    expect(ControlList().props.children[2].props.disabled).toBe(false);
   });
 
   it('builds deterministic replay downloads', () => {

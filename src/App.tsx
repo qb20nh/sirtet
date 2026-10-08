@@ -3,7 +3,12 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 
 import { drawGame, drawShapePreview } from './canvas';
 import { type GameSnapshot, ReverseTetrisEngine, type ShapeType } from './game';
-import { captureRecordedReplayDownload, ReplayRecording } from './replay';
+import {
+  prepareRecordedReplayDownload,
+  ReplayDownloadController,
+  type ReplayDownloadStatus,
+  ReplayRecording,
+} from './replay';
 import {
   bindSessionInterruptions,
   createCommandHandler,
@@ -43,6 +48,7 @@ export function App() {
   const nextOneShape = state.previewQueue[0] ?? null;
   const nextTwoShape = state.previewQueue[1] ?? null;
   const [easyMode, setEasyMode] = useState(false);
+  const [downloadStatus, setDownloadStatus] = useState<ReplayDownloadStatus>('idle');
   const gameCanvas = useRef<HTMLCanvasElement>(null);
   const holdCanvas = useRef<HTMLCanvasElement>(null);
   const nextOneCanvas = useRef<HTMLCanvasElement>(null);
@@ -63,7 +69,21 @@ export function App() {
     [],
   );
 
+  const replayDownload = useMemo(
+    () =>
+      new ReplayDownloadController(
+        (signal) =>
+          prepareRecordedReplayDownload(engine, replayRef.current, recordReplayEvent, signal),
+        downloadReplay,
+        setDownloadStatus,
+      ),
+    [engine, replayRef, recordReplayEvent],
+  );
+
+  useEffect(() => () => replayDownload.dispose(), [replayDownload]);
+
   const startMatch = useCallback(() => {
+    replayDownload.cancel();
     const seed = createReplaySeed();
     const options = { easyMode };
     const timestamp = performance.now();
@@ -71,7 +91,7 @@ export function App() {
     replayRef.current = new ReplayRecording(seed, options, undefined, timestamp);
     startEngine(engine, syncState, () => timestamp, options);
     gameCanvas.current?.focus({ preventScroll: true });
-  }, [easyMode, engine, syncState, gameCanvas]);
+  }, [easyMode, engine, syncState, gameCanvas, replayDownload]);
 
   const togglePause = useCallback(() => {
     setSessionPaused(engine, engine.isPlaying(), syncState, undefined, recordReplayEvent);
@@ -91,9 +111,9 @@ export function App() {
   );
 
   const downloadCurrentReplay = useCallback(() => {
-    downloadReplay(captureRecordedReplayDownload(engine, replayRef.current, recordReplayEvent));
     if (engine.isPlaying()) gameCanvas.current?.focus({ preventScroll: true });
-  }, [engine, recordReplayEvent, gameCanvas]);
+    void replayDownload.start();
+  }, [engine, replayDownload, gameCanvas]);
 
   const endStuckEasyModeGame = useCallback(() => {
     endStuckSession(engine, syncState, recordReplayEvent);
@@ -145,6 +165,7 @@ export function App() {
         canvasRefs,
         overlay: getOverlayContent(state),
         easyMode,
+        downloadStatus,
         state,
         status: getStatusPresentation(state),
         onDownloadReplay: downloadCurrentReplay,
@@ -163,6 +184,7 @@ export interface GameLayoutProps {
   canvasRefs: CanvasRefs;
   overlay: OverlayContent;
   easyMode: boolean;
+  downloadStatus?: ReplayDownloadStatus;
   state: GameSnapshot;
   status: StatusPresentation;
   onDownloadReplay: () => void;
@@ -216,6 +238,7 @@ export class MemoizedGameLayout extends Component<ReturnType<typeof getLayoutPre
 function GameLayoutView({
   canvasRefs,
   easyMode,
+  downloadStatus = 'idle',
   gameState,
   score,
   level,
@@ -330,6 +353,7 @@ function GameLayoutView({
 
           <ControlList
             canEndStuckEasyModeGame={canEndStuckEasyModeGame}
+            downloadStatus={downloadStatus}
             onDownloadReplay={onDownloadReplay}
             onEndStuckEasyModeGame={onEndStuckEasyModeGame}
           />
@@ -458,10 +482,12 @@ export function TouchControls({
 
 export function ControlList({
   canEndStuckEasyModeGame = false,
+  downloadStatus = 'idle',
   onDownloadReplay = () => {},
   onEndStuckEasyModeGame = () => {},
 }: {
   canEndStuckEasyModeGame?: boolean;
+  downloadStatus?: ReplayDownloadStatus;
   onDownloadReplay?: () => void;
   onEndStuckEasyModeGame?: () => void;
 } = {}) {
@@ -476,8 +502,13 @@ export function ControlList({
           </li>
         ))}
       </ul>
-      <button type="button" class="replay-button" onClick={onDownloadReplay}>
-        Download replay
+      <button
+        type="button"
+        class="replay-button"
+        disabled={downloadStatus === 'preparing'}
+        onClick={onDownloadReplay}
+      >
+        {downloadStatus === 'preparing' ? 'Preparing replay…' : 'Download replay'}
       </button>
       {canEndStuckEasyModeGame ? (
         <button
@@ -488,6 +519,9 @@ export function ControlList({
           End game
         </button>
       ) : null}
+      {downloadStatus === 'failed' ? (
+        <p role="alert">Could not prepare replay. Try again.</p>
+      ) : null}
     </div>
   );
 }
@@ -496,16 +530,16 @@ function createReplaySeed(): number {
   return Math.floor(Math.random() * 0x100000000);
 }
 
-function downloadReplay(serializedReplay: string[]): void {
-  const blob = new Blob(serializedReplay, {
-    type: 'application/json',
-  });
+function downloadReplay(blob: Blob): void {
   const url = URL.createObjectURL(blob);
-  const link = document.createElement('a');
-  link.href = url;
-  link.download = `sirtet-replay-${new Date().toISOString().replace(/[:.]/g, '-')}.json`;
-  link.click();
-  URL.revokeObjectURL(url);
+  try {
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `sirtet-replay-${new Date().toISOString().replace(/[:.]/g, '-')}.json`;
+    link.click();
+  } finally {
+    URL.revokeObjectURL(url);
+  }
 }
 
 export function drawGameCanvas(state: GameSnapshot, ref: RefObject<HTMLCanvasElement>): void {
