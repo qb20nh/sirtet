@@ -42,6 +42,7 @@ export function App() {
   if (!engineRef.current) engineRef.current = new ReverseTetrisEngine(() => rngRef.current());
   const engine = engineRef.current;
   const [state, setState] = useState<GameSnapshot>(() => engine.snapshot());
+  const isEscaping = state.activePiece !== null;
   const [easyMode, setEasyMode] = useState(false);
   const gameCanvas = useRef<HTMLCanvasElement>(null);
   const holdCanvas = useRef<HTMLCanvasElement>(null);
@@ -120,7 +121,7 @@ export function App() {
   }, [engine, syncState, recordReplayEvent]);
 
   useEffect(() => {
-    if (state.gameState !== 'PLAYING') return;
+    if (state.gameState !== 'PLAYING' || !isEscaping) return;
 
     return startAnimationLoop(
       engine,
@@ -129,7 +130,7 @@ export function App() {
       cancelAnimationFrame,
       (timestamp) => recordReplayEvent({ type: 'tick' }, timestamp),
     );
-  }, [engine, recordReplayEvent, state.gameState]);
+  }, [engine, recordReplayEvent, state.gameState, isEscaping]);
 
   return (
     <GameLayout

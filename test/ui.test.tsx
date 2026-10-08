@@ -288,7 +288,8 @@ describe('UI helpers and layout', () => {
     );
     callbacks[0]?.(220);
     stop();
-    expect(cancelFrame).toHaveBeenCalledWith(2);
+    expect(callbacks).toHaveLength(0);
+    expect(cancelFrame).toHaveBeenCalledWith(0);
 
     const movingEngine = new ReverseTetrisEngine(() => 0.5);
     movingEngine.start();
