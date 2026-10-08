@@ -71,6 +71,32 @@ describe('ReverseTetrisEngine', () => {
     expect(state.mouseY).toBe(BASELINE);
   });
 
+  it('keeps READY snapshots isolated and restores the board and legality on restart', () => {
+    const engine = new ReverseTetrisEngine(() => 0.5);
+    const ready = engine.snapshot();
+    expect(ready.gameState).toBe('READY');
+    expect(engine.handleKey('Enter')).toBe(false);
+    expect(engine.tick(500)).toBe(false);
+    ready.board[ROWS - 1].fill(0);
+    expect(engine.snapshot().board).toEqual(createInitialBoard());
+
+    const firstStart = engine.start(1_000, { easyMode: true });
+    moveToValidPlacement(engine);
+    expect(engine.handleKey('Enter')).toBe(true);
+    expect(engine.snapshot().piecesCarved).toBe(1);
+    expect(engine.snapshot().board).not.toEqual(firstStart.board);
+    expect(engine.pause()).toBe(true);
+
+    const restarted = engine.start(20_000, { easyMode: true });
+    expect(restarted).toEqual(firstStart);
+    expect(firstStart.board).toEqual(createInitialBoard());
+    expect(engine.getTickTimestamp()).toBe(20_000);
+    expect(engine.isEscaping()).toBe(false);
+    moveToValidPlacement(engine);
+    expect(engine.handleKey('Enter')).toBe(true);
+    expect(engine.snapshot().piecesCarved).toBe(1);
+  });
+
   it('does not queue matching shapes across bag refills', () => {
     const engine = new ReverseTetrisEngine(() => 0.5);
     engine.start();

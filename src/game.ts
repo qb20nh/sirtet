@@ -383,6 +383,15 @@ const ESCAPE_GEOMETRY = Object.fromEntries(
 ) as Record<ShapeType, { minX: number; maxX: number; maxY: number; rows: [number, number][] }[]>;
 const CELL_COUNT = ROWS * COLS;
 const ESCAPE_STATE_COUNT = (ROWS + 8) * (COLS + 8) * 4;
+// Searches are synchronous and invoke no callbacks while using this workspace.
+// The board and iteration limits bound retained queues; returned paths own their steps.
+const ESCAPE_WORKSPACE = {
+  xs: [] as number[],
+  ys: [] as number[],
+  rotations: [] as Rotation[],
+  parents: [] as number[],
+  visited: new Uint8Array(ESCAPE_STATE_COUNT),
+};
 const PLACEMENT_METADATA = createPlacementMetadata();
 const GAME_KEYS = [
   'ArrowUp',
@@ -431,7 +440,7 @@ interface EngineState extends GameSnapshot {
   shapeBag: ShapeType[];
   isFirstBag: boolean;
   lastTime: number;
-  legalityIndex: CarveLegalityIndex;
+  legalityIndex: CarveLegalityIndex | null;
 }
 
 interface CarvePlacement {
@@ -464,6 +473,7 @@ interface CarveLegalityIndex {
   legalPathByPlacement: Map<number, PathStep[] | null>;
   shapeHasLegalCarve: Map<ShapeType, boolean>;
   packValidityByResultMask: Map<string, boolean>;
+  boardValidityByPlacement: Map<number, boolean>;
 }
 
 export function createInitialBoard(): Board {
@@ -565,9 +575,13 @@ function isCursorOutOfVisibleBounds(
   y: number,
   rotation: Rotation,
 ): boolean {
-  return getCells(type, x, y, rotation).some(
-    (cell) => cell.x < 0 || cell.x >= COLS || cell.y < VISIBLE_TOP || cell.y >= ROWS,
-  );
+  if (!type) return false;
+  for (const [dx, dy] of SHAPES[type].coords[rotation]) {
+    const cellX = x + dx;
+    const cellY = y + dy;
+    if (cellX < 0 || cellX >= COLS || cellY < VISIBLE_TOP || cellY >= ROWS) return true;
+  }
+  return false;
 }
 
 export function isBoardValid(board: Board, cells: Cell[]): boolean {
@@ -641,11 +655,14 @@ function searchEscapePath(
     if (y >= 0 && y < ROWS) rowBits[y] &= ~(1 << (startX + dx));
   }
 
-  const xs = [startX];
-  const ys = [startY];
-  const rotations: Rotation[] = [startR];
-  const parents: number[] | undefined = path ? [-1] : undefined;
-  const visited = new Uint8Array(ESCAPE_STATE_COUNT);
+  const { xs, ys, rotations, visited } = ESCAPE_WORKSPACE;
+  const parents = path ? ESCAPE_WORKSPACE.parents : undefined;
+  xs[0] = startX;
+  ys[0] = startY;
+  rotations[0] = startR;
+  if (parents) parents[0] = -1;
+  let queueLength = 1;
+  visited.fill(0);
   let outsideVisited: Set<number> | undefined;
   const visit = (key: number): boolean => {
     if (key >= 0 && key < visited.length) {
@@ -678,16 +695,17 @@ function searchEscapePath(
     }
 
     if (visit(key)) {
-      xs.push(x);
-      ys.push(y);
-      rotations.push(rotation);
-      parents?.push(cursor);
+      xs[queueLength] = x;
+      ys[queueLength] = y;
+      rotations[queueLength] = rotation;
+      if (parents) parents[queueLength] = cursor;
+      queueLength++;
     }
     // A valid SRS kick ends kick selection even when this state was already visited.
     return true;
   };
 
-  for (; cursor < xs.length && cursor < 2000; cursor++) {
+  for (; cursor < queueLength && cursor < 2000; cursor++) {
     const x = xs[cursor];
     const y = ys[cursor];
     const rotation = rotations[cursor];
@@ -761,31 +779,29 @@ function createPlacementMetadata(): PlacementMetadata {
   for (const type of SHAPE_KEYS) {
     for (let rotationIndex = 0; rotationIndex < 4; rotationIndex++) {
       const rotation = rotationIndex as Rotation;
+      const coords = SHAPES[type].coords[rotation];
+      const minX = Math.min(...coords.map(([x]) => x));
+      const maxX = Math.max(...coords.map(([x]) => x));
+      const minY = Math.min(...coords.map(([, y]) => y));
+      const maxY = Math.max(...coords.map(([, y]) => y));
+      const supportCoords = coords.filter(
+        ([x, y]) => !coords.some(([otherX, otherY]) => otherX === x && otherY === y + 1),
+      );
+      const cellOffsets = coords.map(([x, y]) => y * COLS + x);
+      const sortedCellOffsets = [...cellOffsets].sort((left, right) => left - right);
 
-      for (let y = -4; y < ROWS + 4; y++) {
-        for (let x = -4; x < COLS + 4; x++) {
+      for (let y = 0 - minY; y < ROWS - maxY; y++) {
+        for (let x = 0 - minX; x < COLS - maxX; x++) {
           const cells = getCells(type, x, y, rotation);
-          if (cells.some((cell) => cell.x < 0 || cell.x >= COLS || cell.y < 0 || cell.y >= ROWS)) {
-            continue;
-          }
-
-          const cellIndexes = cells.map(cellIndex);
-          const cellKey = [...cellIndexes].sort((left, right) => left - right).join('_');
-          const supportIndexes = new Set<number>();
-          let hasFloorSupport = false;
-
-          for (const cell of cells) {
-            const belowY = cell.y + 1;
-            if (belowY >= ROWS) {
-              hasFloorSupport = true;
-              continue;
-            }
-
-            const isSelf = cells.some((other) => other.x === cell.x && other.y === belowY);
-            if (!isSelf) {
-              supportIndexes.add(cellIndex({ x: cell.x, y: belowY }));
-            }
-          }
+          const anchorIndex = y * COLS + x;
+          const cellIndexes = cellOffsets.map((offset) => anchorIndex + offset);
+          const cellKey = sortedCellOffsets.map((offset) => anchorIndex + offset).join('_');
+          const hasFloorSupport = y + maxY === ROWS - 1;
+          const supportIndexes = (
+            hasFloorSupport
+              ? supportCoords.filter(([, supportY]) => y + supportY + 1 < ROWS)
+              : supportCoords
+          ).map(([supportX, supportY]) => (y + supportY + 1) * COLS + x + supportX);
 
           const id = placements.length;
           const placement: CarvePlacement = {
@@ -797,7 +813,7 @@ function createPlacementMetadata(): PlacementMetadata {
             cells,
             cellIndexes,
             cellKey,
-            supportIndexes: [...supportIndexes],
+            supportIndexes,
             hasFloorSupport,
           };
 
@@ -845,6 +861,7 @@ function createCarveLegalityIndex(board: Board): CarveLegalityIndex {
     legalPathByPlacement: new Map(),
     shapeHasLegalCarve: new Map(),
     packValidityByResultMask: new Map(),
+    boardValidityByPlacement: new Map(),
   };
 }
 
@@ -932,8 +949,14 @@ function isPlacementBoardValid(
   legalityIndex: CarveLegalityIndex,
   placement: CarvePlacement,
 ): boolean {
-  const simBoard = createBoardAfterCarve(board, placement.cells);
-  return isPreparedBoardValidInIndex(simBoard, legalityIndex);
+  const cached = legalityIndex.boardValidityByPlacement.get(placement.id);
+  if (cached !== undefined) return cached;
+  const valid = isPreparedBoardValidInIndex(
+    createBoardAfterCarve(board, placement.cells),
+    legalityIndex,
+  );
+  legalityIndex.boardValidityByPlacement.set(placement.id, valid);
+  return valid;
 }
 
 function isPreparedBoardValidInIndex(board: Board, legalityIndex: CarveLegalityIndex): boolean {
@@ -960,6 +983,8 @@ function applyLegalityCellValue(legalityIndex: CarveLegalityIndex, cell: Cell, v
   }
   legalityIndex.boardMask = rowBitsToBoardMask(legalityIndex.rowBits);
   legalityIndex.shapeHasLegalCarve.clear();
+  // Even disjoint carves can change whether a placement leaves a packable board.
+  legalityIndex.boardValidityByPlacement.clear();
 
   if (value === 1) {
     legalityIndex.legalPathByPlacement.clear();
@@ -1413,6 +1438,7 @@ export class ReverseTetrisEngine {
   }
 
   // Timer accumulation is private; callers only need a new snapshot for visible transitions.
+  // Escape playback does not change the board or cursor, so its ghost stays valid.
   tick(timestamp: number): boolean {
     if (this.state.gameState !== 'PLAYING') {
       return false;
@@ -1439,14 +1465,12 @@ export class ReverseTetrisEngine {
       );
       this.state.activePiece.pathIndex++;
       visibleStateChanged = true;
-      this.validateGhost();
     }
 
     if (this.state.activePiece.pathIndex >= this.state.activePiece.path.length - 1) {
       if (!this.state.queuedPiece) {
         if (this.state.easyMode) {
           this.state.activePiece = null;
-          this.validateGhost();
           return true;
         }
 
@@ -1457,7 +1481,6 @@ export class ReverseTetrisEngine {
       this.state.activePiece = this.state.queuedPiece;
       this.state.queuedPiece = null;
       visibleStateChanged = true;
-      this.validateGhost();
     }
 
     return visibleStateChanged;
@@ -1505,23 +1528,16 @@ export class ReverseTetrisEngine {
   private tryRotation(nextRotation: Rotation): boolean {
     if (!this.state.currentShapeType) return false;
 
-    for (const candidate of getSrsRotationCandidates(
+    for (const [dx, dy] of getSrsKickOffsets(
       this.state.currentShapeType,
-      this.state.mouseX,
-      this.state.mouseY,
       this.state.currentRotation,
       nextRotation,
     )) {
-      if (
-        !isCursorOutOfVisibleBounds(
-          this.state.currentShapeType,
-          candidate.x,
-          candidate.y,
-          nextRotation,
-        )
-      ) {
-        this.state.mouseX = candidate.x;
-        this.state.mouseY = candidate.y;
+      const x = this.state.mouseX + dx;
+      const y = this.state.mouseY + dy;
+      if (!isCursorOutOfVisibleBounds(this.state.currentShapeType, x, y, nextRotation)) {
+        this.state.mouseX = x;
+        this.state.mouseY = y;
         this.state.currentRotation = nextRotation;
         return true;
       }
@@ -1647,7 +1663,7 @@ export class ReverseTetrisEngine {
 
   private syncLegalityIndex(): CarveLegalityIndex {
     const boardMask = boardToMask(this.state.board);
-    if (this.state.legalityIndex.boardMask !== boardMask) {
+    if (!this.state.legalityIndex || this.state.legalityIndex.boardMask !== boardMask) {
       this.state.legalityIndex = createCarveLegalityIndex(this.state.board);
     }
 
@@ -1785,7 +1801,7 @@ function createReadyState(): EngineState {
     escapeStepDelay: 400,
     statusReason: '',
     lastTime: 0,
-    legalityIndex: createCarveLegalityIndex(board),
+    legalityIndex: null,
   };
 }
 
@@ -1924,7 +1940,7 @@ function findMostConstrainedFrontierCell(
 ): { placements: Cell[][] } | null {
   const rowBits = createRowBits(board);
   const escapePathByPlacement = new Map<number, boolean>();
-  let fallbackCell: Cell | null = null;
+  let fallbackPlacements: Cell[][] | null = null;
 
   for (let x = 0; x < COLS; x++) {
     for (let y = 0; y <= BASELINE; y++) {
@@ -1942,26 +1958,12 @@ function findMostConstrainedFrontierCell(
         true,
       );
       if (placements.length <= 1) return { placements };
-      fallbackCell ??= { x, y };
+      fallbackPlacements ??= placements;
       break;
     }
   }
 
-  return fallbackCell
-    ? {
-        placements: findUniquePlacementsForCell(
-          board,
-          rowBits,
-          fallbackCell.x,
-          fallbackCell.y,
-          true,
-          Number.POSITIVE_INFINITY,
-          escapePathByPlacement,
-          pathablePlacementIds,
-          true,
-        ),
-      }
-    : null;
+  return fallbackPlacements ? { placements: fallbackPlacements } : null;
 }
 
 function removeForcedPlacements(board: Board): boolean {
@@ -1975,7 +1977,8 @@ function removeForcedPlacements(board: Board): boolean {
       for (let x = 0; x < COLS; x++) {
         if (board[y][x] !== 1) continue;
 
-        const placements = findUniquePlacementsForCell(board, rowBits, x, y);
+        // Only a unique placement is forced; a second match settles this cell.
+        const placements = findUniquePlacementsForCell(board, rowBits, x, y, false, 2);
         if (placements.length === 0) return false;
 
         if (placements.length === 1) {

@@ -6,6 +6,7 @@ import {
   findEscapePath,
   getCells,
   getSrsRotationCandidates,
+  hasLegalCarvePlacement,
   type PathStep,
   ROWS,
   type Rotation,
@@ -127,6 +128,26 @@ describe('escape search equivalence', () => {
           referencePath(blocked, type, start),
         );
       }
+    }
+  });
+
+  it('isolates scratch state between legality probes and unrelated full paths', () => {
+    const board = createInitialBoard();
+    const savedPath = findEscapePath(board, 'O', 0, 18, 0);
+    const expectedPath = referencePath(board, 'O', { x: 0, y: 18, r: 0 });
+    const empty = Array.from({ length: ROWS }, () => Array(COLS).fill(0));
+
+    for (const type of Object.keys(SHAPES) as ShapeType[]) {
+      expect(hasLegalCarvePlacement(empty, type)).toBe(false);
+      expect(hasLegalCarvePlacement(board, type)).toBe(true);
+      const start = { x: -1, y: 5, r: 1 } as const;
+      expect(findEscapePath(empty, type, start.x, start.y, start.r)).toEqual(
+        referencePath(empty, type, start),
+      );
+      const farAbove = { x: SPAWN_X, y: -1e12, r: 0 } as const;
+      expect(findEscapePath(empty, type, farAbove.x, farAbove.y, farAbove.r)).toEqual([farAbove]);
+      expect(findEscapePath(board, 'O', 0, 18, 0)).toEqual(expectedPath);
+      expect(savedPath).toEqual(expectedPath);
     }
   });
 
