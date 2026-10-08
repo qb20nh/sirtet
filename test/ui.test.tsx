@@ -3,7 +3,8 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   type CanvasRefs,
   ControlList,
-  drawCanvases,
+  drawGameCanvas,
+  drawPreviewCanvas,
   GameLayout,
   Metric,
   Overlay,
@@ -215,10 +216,13 @@ describe('UI helpers and layout', () => {
     expect(onEndStuckEasyModeGame).toHaveBeenCalledOnce();
     ControlList({ canEndStuckEasyModeGame: true }).props.children[3].props.onClick();
 
-    drawCanvases(state, refs);
+    drawGameCanvas(state, refs.game);
+    drawPreviewCanvas(state.holdShapeType, refs.hold);
+    drawPreviewCanvas(state.previewQueue[0] ?? null, refs.nextOne);
     expect(refs.game.current?.getContext('2d')).toBeTruthy();
-    drawCanvases({ ...state, previewQueue: [] }, createCanvasRefs(createCanvas()));
-    drawCanvases(state, createCanvasRefs(null));
+    drawPreviewCanvas(null, refs.nextTwo);
+    drawGameCanvas(state, { current: null });
+    drawPreviewCanvas('T', { current: null });
   });
 
   it('builds deterministic replay downloads', () => {

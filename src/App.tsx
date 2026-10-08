@@ -1,5 +1,5 @@
 import type { ComponentChildren, RefObject } from 'preact';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'preact/hooks';
 
 import { drawGame, drawShapePreview } from './canvas';
 import { type GameSnapshot, ReverseTetrisEngine, type ShapeType } from './game';
@@ -43,6 +43,9 @@ export function App() {
   const engine = engineRef.current;
   const [state, setState] = useState<GameSnapshot>(() => engine.snapshot());
   const isEscaping = state.activePiece !== null;
+  const holdShape = state.holdShapeType;
+  const nextOneShape = state.previewQueue[0] ?? null;
+  const nextTwoShape = state.previewQueue[1] ?? null;
   const [easyMode, setEasyMode] = useState(false);
   const gameCanvas = useRef<HTMLCanvasElement>(null);
   const holdCanvas = useRef<HTMLCanvasElement>(null);
@@ -105,9 +108,22 @@ export function App() {
     endStuckSession(engine, syncState, recordReplayEvent);
   }, [engine, syncState, recordReplayEvent]);
 
-  useEffect(() => {
-    drawCanvases(state, canvasRefs);
-  }, [state, canvasRefs]);
+  // Draw with the DOM commit instead of waiting for passive effects after paint.
+  useLayoutEffect(() => {
+    drawGameCanvas(state, gameCanvas);
+  }, [state, gameCanvas]);
+
+  useLayoutEffect(() => {
+    drawPreviewCanvas(holdShape, holdCanvas);
+  }, [holdShape, holdCanvas]);
+
+  useLayoutEffect(() => {
+    drawPreviewCanvas(nextOneShape, nextOneCanvas);
+  }, [nextOneShape, nextOneCanvas]);
+
+  useLayoutEffect(() => {
+    drawPreviewCanvas(nextTwoShape, nextTwoCanvas);
+  }, [nextTwoShape, nextTwoCanvas]);
 
   useEffect(() => {
     const onKeyDown = createKeyDownHandler(engine, syncState, recordReplayEvent, togglePause);
@@ -438,20 +454,14 @@ function downloadReplay(serializedReplay: string): void {
   URL.revokeObjectURL(url);
 }
 
-export function drawCanvases(state: GameSnapshot, refs: CanvasRefs): void {
-  const game = refs.game.current;
-  const hold = refs.hold.current;
-  const nextOne = refs.nextOne.current;
-  const nextTwo = refs.nextTwo.current;
-  const gameContext = game?.getContext('2d');
-  const holdContext = hold?.getContext('2d');
-  const nextOneContext = nextOne?.getContext('2d');
-  const nextTwoContext = nextTwo?.getContext('2d');
+export function drawGameCanvas(state: GameSnapshot, ref: RefObject<HTMLCanvasElement>): void {
+  const canvas = ref.current;
+  const context = canvas?.getContext('2d');
+  if (canvas && context) drawGame(context, canvas, state);
+}
 
-  if (game && gameContext) drawGame(gameContext, game, state);
-  if (hold && holdContext) drawShapePreview(state.holdShapeType, holdContext, hold);
-  if (nextOne && nextOneContext)
-    drawShapePreview(state.previewQueue[0] ?? null, nextOneContext, nextOne);
-  if (nextTwo && nextTwoContext)
-    drawShapePreview(state.previewQueue[1] ?? null, nextTwoContext, nextTwo);
+export function drawPreviewCanvas(type: ShapeType | null, ref: RefObject<HTMLCanvasElement>): void {
+  const canvas = ref.current;
+  const context = canvas?.getContext('2d');
+  if (canvas && context) drawShapePreview(type, context, canvas);
 }
