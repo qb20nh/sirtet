@@ -64,7 +64,10 @@ and chunk-boundary regressions.
 
 During play, tick clocks use chunked numeric storage. Export expands one chunk
 at a time into the same version 3 JSON, preserving full precision and event order.
-Long recordings still grow with session length; restarting releases the old log.
+Large exports show “Preparing replay…” and yield between batches so play can
+continue. The file captures the moment Download was clicked; later input belongs
+to the continuing recording. Restart cancels a pending download. Long recordings
+still grow with session length; restarting releases the old log.
 
 ## Architecture
 
@@ -93,6 +96,12 @@ small integer keys for identical cell sets. The packed addresses rely on the fix
 10-column, 26-row board and four-cell tetrominoes. Returned paths and snapshots
 remain independently owned.
 
+Private reachability probes use depth-first search and stop when empty headroom
+proves an escape. Their bounded metadata origins admit at most 1,018 states;
+displayed paths retain the ordered breadth-first search. Board connectivity uses
+10-bit row masks, rooted at the baseline. Changing board dimensions or rotation
+rules requires revisiting these bounds and the tail fixtures.
+
 ## Checks
 
 ```sh
@@ -101,7 +110,7 @@ pnpm test         # mechanics, UI and session tests
 pnpm quality      # types, lint, coverage, unused code and duplication gates
 pnpm build
 pnpm benchmark:idle   # compare merged main with the current working tree
-pnpm benchmark:engine # seeded sessions, all-shape controls and active animation
+pnpm benchmark:engine # sessions, controls, animation and difficult-carve tails
 ```
 
 The session tests assert zero requested callbacks while idle, full animation beats
@@ -114,8 +123,10 @@ baseline/candidate order after warmup. The idle benchmark supplies 600 frame
 opportunities, invoking only requested callbacks. The engine benchmark verifies
 exact escape paths and intermediate session snapshots before timing native Node
 modules. It also checks every shape at the cursor boundaries and fractional-clock
-animation with a stationary valid ghost. Setup stays outside control/animation
-timing. To compare revisions and retain JSON without pnpm's command banner:
+animation with a stationary valid ghost. Two later-session fixtures additionally
+measure a single difficult carve across 30 alternating pairs, reporting p50,
+p95 and maximum elapsed time and CPU. Setup stays outside control, animation and
+single-carve timing. To compare revisions and retain JSON without pnpm's command banner:
 
 ```sh
 node scripts/benchmark-idle.mjs 3d2d541 HEAD > /tmp/sirtet-idle.json
@@ -138,6 +149,9 @@ expanded engine workloads, rejected experiments and the unmet session-time targe
 The [search and layout follow-up](goals/improve-sirtet-layout-report.md) compares
 against `f008564`, records flat placement storage and smaller deduplication keys,
 and reassesses the earlier session target with final measurements and tradeoffs.
+The [worst-case responsiveness report](goals/improve-sirtet-tail-report.md)
+compares against `487fe689`, covering difficult-carve tails, cooperative replay
+downloads, throttled-browser checks and their remaining device limits.
 
 Before shipping, check these behaviors in a real browser:
 
