@@ -13,6 +13,7 @@
     "test:watch": "vitest",
     "test:session": "vitest run test/session.test.ts",
     "benchmark:idle": "node scripts/benchmark-idle.mjs",
+    "benchmark:engine": "node scripts/benchmark-engine.mjs",
     "coverage": "vitest run --coverage --passWithNoTests",
     "lint": "biome check .",
     "format": "biome format --write .",

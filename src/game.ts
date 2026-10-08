@@ -365,7 +365,24 @@ const I_SRS_KICKS: Record<string, readonly (readonly [number, number])[]> = {
 };
 
 const SHAPE_KEYS: ShapeType[] = ['I', 'J', 'L', 'O', 'S', 'T', 'Z'];
+const ESCAPE_GEOMETRY = Object.fromEntries(
+  SHAPE_KEYS.map((type) => [
+    type,
+    SHAPES[type].coords.map((cells) => {
+      const minX = Math.min(...cells.map(([x]) => x));
+      const rows = new Map<number, number>();
+      for (const [x, y] of cells) rows.set(y, (rows.get(y) ?? 0) | (1 << (x - minX)));
+      return {
+        minX,
+        maxX: Math.max(...cells.map(([x]) => x)),
+        maxY: Math.max(...cells.map(([, y]) => y)),
+        rows: [...rows],
+      };
+    }),
+  ]),
+) as Record<ShapeType, { minX: number; maxX: number; maxY: number; rows: [number, number][] }[]>;
 const CELL_COUNT = ROWS * COLS;
+const ESCAPE_STATE_COUNT = (ROWS + 8) * (COLS + 8) * 4;
 const PLACEMENT_METADATA = createPlacementMetadata();
 const GAME_KEYS = [
   'ArrowUp',
@@ -491,17 +508,20 @@ export function getSrsRotationCandidates(
   }));
 }
 
+const EMPTY_KICKS: readonly (readonly [number, number])[] = [];
+const O_KICKS: readonly (readonly [number, number])[] = [[0, 0]];
+const SRS_KICKS_BY_ROTATION = [JLSTZ_SRS_KICKS, I_SRS_KICKS].map((kicks) =>
+  Array.from({ length: 4 }, (_, from) =>
+    Array.from({ length: 4 }, (_, to) => kicks[`${from}>${to}`] ?? EMPTY_KICKS),
+  ),
+);
+
 function getSrsKickOffsets(
   type: ShapeType,
   from: Rotation,
   to: Rotation,
 ): readonly (readonly [number, number])[] {
-  if (type === 'O') return [[0, 0]];
-
-  const key = `${from}>${to}`;
-  const kicks = type === 'I' ? I_SRS_KICKS[key] : JLSTZ_SRS_KICKS[key];
-
-  return kicks ?? [];
+  return type === 'O' ? O_KICKS : SRS_KICKS_BY_ROTATION[type === 'I' ? 1 : 0][from][to];
 }
 
 function isQuarterRotation(from: Rotation, to: Rotation): boolean {
@@ -587,42 +607,8 @@ export function findEscapePath(
   startY: number,
   startR: Rotation,
 ): PathStep[] | null {
-  const startCells = getCells(type, startX, startY, startR);
-  const queue: PathStepWithHistory[] = [
-    {
-      x: startX,
-      y: startY,
-      r: startR,
-      path: [{ x: startX, y: startY, r: startR }],
-    },
-  ];
-  const visited = new Set([`${startX},${startY},${startR}`]);
-  let iterations = 0;
-
-  while (queue.length > 0 && iterations < 2000) {
-    iterations++;
-    const current = queue.shift();
-    if (!current) break;
-
-    if (isExitPosition(type, current)) {
-      return current.path;
-    }
-
-    const moves = createEscapeMoves(board, type, startCells, current);
-
-    for (const move of moves) {
-      const key = `${move.x},${move.y},${move.r}`;
-      if (visited.has(key)) continue;
-
-      visited.add(key);
-      queue.push({
-        ...move,
-        path: [...current.path, move],
-      });
-    }
-  }
-
-  return null;
+  const path: PathStep[] = [];
+  return searchEscapePath(board, type, startX, startY, startR, path) ? path : null;
 }
 
 function hasEscapePath(
@@ -632,54 +618,92 @@ function hasEscapePath(
   startY: number,
   startR: Rotation,
 ): boolean {
-  const rowBits = createRowBits(board);
-  const startRowBits = new Uint16Array(ROWS);
-  for (const cell of getCells(type, startX, startY, startR)) {
-    if (cell.y >= 0 && cell.y < ROWS) {
-      startRowBits[cell.y] |= 1 << cell.x;
-    }
+  return searchEscapePath(board, type, startX, startY, startR);
+}
+
+// Both legality probes and displayed paths use the same ordered breadth-first search.
+// Store coordinates and parents once per visited state, then build only the winning path.
+function searchEscapePath(
+  board: Board,
+  type: ShapeType,
+  startX: number,
+  startY: number,
+  startR: Rotation,
+  path?: PathStep[],
+): boolean {
+  // The public full-path helper accepts any nonzero cell as an obstacle. Packing
+  // probes retain their existing binary (value === 1) board interpretation.
+  const rowBits = path
+    ? board.map((row) => row.reduce((bits, value, x) => (value === 0 ? bits : bits | (1 << x)), 0))
+    : createRowBits(board);
+  for (const [dx, dy] of SHAPES[type].coords[startR]) {
+    const y = startY + dy;
+    if (y >= 0 && y < ROWS) rowBits[y] &= ~(1 << (startX + dx));
   }
 
-  const queue: PathStep[] = [{ x: startX, y: startY, r: startR }];
-  const visited = new Set([packEscapeState(startX, startY, startR)]);
+  const xs = [startX];
+  const ys = [startY];
+  const rotations: Rotation[] = [startR];
+  const parents: number[] | undefined = path ? [-1] : undefined;
+  const visited = new Uint8Array(ESCAPE_STATE_COUNT);
+  let outsideVisited: Set<number> | undefined;
+  const visit = (key: number): boolean => {
+    if (key >= 0 && key < visited.length) {
+      if (visited[key]) return false;
+      visited[key] = 1;
+    } else {
+      // Exported searches can start above or outside the bounded playing field.
+      outsideVisited ??= new Set();
+      if (outsideVisited.has(key)) return false;
+      outsideVisited.add(key);
+    }
+    return true;
+  };
+  visit(packEscapeState(startX, startY, startR));
+  const geometry = ESCAPE_GEOMETRY[type];
   let cursor = 0;
-  let iterations = 0;
 
-  while (cursor < queue.length && iterations < 2000) {
-    iterations++;
-    const current = queue[cursor++];
-    if (isExitPositionFast(type, current)) return true;
-
-    const upward = { x: current.x, y: current.y - 1, r: current.r };
-    if (canOccupyEscapePathStepFast(rowBits, startRowBits, type, upward)) {
-      const key = packEscapeState(upward.x, upward.y, upward.r);
-      if (!visited.has(key)) {
-        visited.add(key);
-        queue.push(upward);
-      }
+  const enqueue = (x: number, y: number, rotation: Rotation): boolean => {
+    if (y <= SPAWN_Y && (x !== SPAWN_X || rotation !== 0)) return false;
+    const shape = geometry[rotation];
+    if (x + shape.minX < 0 || x + shape.maxX >= COLS || y + shape.maxY >= ROWS) return false;
+    for (const [dy, mask] of shape.rows) {
+      const row = y + dy;
+      if (row >= 0 && (rowBits[row] & (mask << (x + shape.minX))) !== 0) return false;
     }
 
-    for (const dx of getHorizontalDeltas(current.x)) {
-      if (dx === 0) continue;
-      const horizontal = { x: current.x + dx, y: current.y, r: current.r };
-      if (!canOccupyEscapePathStepFast(rowBits, startRowBits, type, horizontal)) continue;
-      const key = packEscapeState(horizontal.x, horizontal.y, horizontal.r);
-      if (visited.has(key)) continue;
-
-      visited.add(key);
-      queue.push(horizontal);
+    const key = packEscapeState(x, y, rotation);
+    if (visit(key)) {
+      xs.push(x);
+      ys.push(y);
+      rotations.push(rotation);
+      parents?.push(cursor);
     }
+    // A valid SRS kick ends kick selection even when this state was already visited.
+    return true;
+  };
 
-    for (const rotation of getRotationOptions(current.r)) {
-      for (const [dx, dy] of getSrsKickOffsets(type, current.r, rotation)) {
-        const candidate = { x: current.x + dx, y: current.y + dy, r: rotation };
-        if (!canOccupyEscapePathStepFast(rowBits, startRowBits, type, candidate)) continue;
-        const key = packEscapeState(candidate.x, candidate.y, candidate.r);
-        if (!visited.has(key)) {
-          visited.add(key);
-          queue.push(candidate);
+  for (; cursor < xs.length && cursor < 2000; cursor++) {
+    const x = xs[cursor];
+    const y = ys[cursor];
+    const rotation = rotations[cursor];
+    if (x === SPAWN_X && rotation === 0 && y + geometry[rotation].maxY < 0) {
+      if (path && parents) {
+        for (let index = cursor; index >= 0; index = parents[index]) {
+          path.push({ x: xs[index], y: ys[index], r: rotations[index] });
         }
-        break;
+        path.reverse();
+      }
+      return true;
+    }
+
+    enqueue(x, y - 1, rotation);
+    const towardSpawn = x < SPAWN_X ? 1 : -1;
+    enqueue(x + towardSpawn, y, rotation);
+    enqueue(x - towardSpawn, y, rotation);
+    for (const nextRotation of getRotationOptions(rotation)) {
+      for (const [dx, dy] of getSrsKickOffsets(type, rotation, nextRotation)) {
+        if (enqueue(x + dx, y + dy, nextRotation)) break;
       }
     }
   }
@@ -689,31 +713,6 @@ function hasEscapePath(
 
 function packEscapeState(x: number, y: number, rotation: Rotation): number {
   return (((y + 8) * (COLS + 8) + x + 4) << 2) | rotation;
-}
-
-function isExitPositionFast(type: ShapeType, step: PathStep): boolean {
-  return isInSpawnColumn(step) && SHAPES[type].coords[step.r].every(([, dy]) => step.y + dy < 0);
-}
-
-function canOccupyEscapePathStepFast(
-  rowBits: number[],
-  startRowBits: Uint16Array,
-  type: ShapeType,
-  step: PathStep,
-): boolean {
-  if (step.y <= SPAWN_Y && !isInSpawnColumn(step)) return false;
-
-  for (const [dx, dy] of SHAPES[type].coords[step.r]) {
-    const x = step.x + dx;
-    const y = step.y + dy;
-    if (x < 0 || x >= COLS || y >= ROWS) return false;
-    if (y < 0) continue;
-
-    const bit = 1 << x;
-    if ((rowBits[y] & bit) !== 0 && (startRowBits[y] & bit) === 0) return false;
-  }
-
-  return true;
 }
 
 export function findLegalCarvePath(
@@ -905,9 +904,9 @@ function getLegalPathForPlacement(
   let escapePath: PathStep[] | null = null;
 
   if (
-    isPreparedBoardValidInIndex(board, legalityIndex) &&
     legalityIndex.filledCountByPlacement[placementId] === placement.cellIndexes.length &&
-    legalityIndex.supportCountByPlacement[placementId] > 0
+    legalityIndex.supportCountByPlacement[placementId] > 0 &&
+    isPreparedBoardValidInIndex(board, legalityIndex)
   ) {
     escapePath = findEscapePath(
       board,
@@ -1019,10 +1018,6 @@ function cellIndex(cell: Cell): number {
 
 function placementKey(type: ShapeType, x: number, y: number, rotation: Rotation): string {
   return `${type},${x},${y},${rotation}`;
-}
-
-interface PathStepWithHistory extends PathStep {
-  path: PathStep[];
 }
 
 interface EscapePlayback {
@@ -1255,71 +1250,15 @@ function isUpwardPathStep(previous: PathStep, current: PathStep): boolean {
   return previous.x === current.x && previous.r === current.r && current.y === previous.y - 1;
 }
 
-function createEscapeMoves(
-  board: Board,
-  type: ShapeType,
-  startCells: Cell[],
-  current: PathStep,
-): PathStep[] {
-  const moves: PathStep[] = [];
-  const upward = { x: current.x, y: current.y - 1, r: current.r };
-  if (canOccupyEscapePathStep(board, type, startCells, upward)) {
-    moves.push(upward);
-  }
+const ROTATION_OPTIONS: readonly (readonly Rotation[])[] = [
+  [0, 3, 1],
+  [0, 1, 2],
+  [1, 3, 2],
+  [0, 3, 2],
+];
 
-  for (const dx of getHorizontalDeltas(current.x)) {
-    if (dx !== 0) {
-      const horizontal = { x: current.x + dx, y: current.y, r: current.r };
-      if (canOccupyEscapePathStep(board, type, startCells, horizontal)) {
-        moves.push(horizontal);
-      }
-    }
-  }
-
-  for (const rotation of getRotationOptions(current.r)) {
-    for (const candidate of getSrsRotationCandidates(
-      type,
-      current.x,
-      current.y,
-      current.r,
-      rotation,
-    )) {
-      if (canOccupyEscapePathStep(board, type, startCells, candidate)) {
-        moves.push(candidate);
-        break;
-      }
-    }
-  }
-
-  return moves;
-}
-
-function canOccupyEscapePathStep(
-  board: Board,
-  type: ShapeType,
-  startCells: Cell[],
-  step: PathStep,
-): boolean {
-  if (step.y <= SPAWN_Y && !isInSpawnColumn(step)) return false;
-
-  return getCells(type, step.x, step.y, step.r).every((cell) => {
-    if (cell.x < 0 || cell.x >= COLS || cell.y >= ROWS) return false;
-    const isSelf = startCells.some((startCell) => startCell.x === cell.x && startCell.y === cell.y);
-
-    return cell.y < 0 || board[cell.y][cell.x] === 0 || isSelf;
-  });
-}
-
-function getHorizontalDeltas(x: number): number[] {
-  if (x < SPAWN_X) return [1, 0, -1];
-  if (x > SPAWN_X) return [-1, 0, 1];
-  return [0, -1, 1];
-}
-
-function getRotationOptions(rotation: Rotation): Rotation[] {
-  const options = [rotateLeft(rotation), rotation, rotateRight(rotation)];
-
-  return options.sort((left, right) => getRotationDistance(left) - getRotationDistance(right));
+function getRotationOptions(rotation: Rotation): readonly Rotation[] {
+  return ROTATION_OPTIONS[rotation];
 }
 
 function getRotationDistance(rotation: Rotation): number {
