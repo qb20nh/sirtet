@@ -59,7 +59,12 @@ or advance the engine for key events. Version 2 files lack these timings and
 cannot always reconstruct a run. Version 3 also uses an explicit seeded bag
 shuffle; reconstruction requires the engine's version 3 rules, not the earlier
 runtime-dependent random sort. There is no replay import UI. See
-`test/session.test.ts` for reconstruction and interruption regressions.
+`test/session.test.ts` and `test/replay.test.ts` for reconstruction, interruption,
+and chunk-boundary regressions.
+
+During play, tick clocks use chunked numeric storage. Export expands one chunk
+at a time into the same version 3 JSON, preserving full precision and event order.
+Long recordings still grow with session length; restarting releases the old log.
 
 ## Architecture
 
@@ -67,6 +72,7 @@ runtime-dependent random sort. There is no replay import UI. See
 | --- | --- |
 | `src/game.ts` | Board rules, legal escape paths, scoring, queue and game state |
 | `src/session.ts` | Input routing, interruption listeners, animation scheduling and replay data |
+| `src/replay.ts` | Compact in-memory recording and chunked version 3 export |
 | `src/canvas.ts` | Board, cursor, escape piece and preview drawing |
 | `src/ui.ts` | Status messages, overlays and control hints |
 | `src/App.tsx` | Preact lifecycle wiring and accessible player controls |
@@ -79,6 +85,8 @@ Intermediate timer increments do not redraw the canvases. Pause freezes the
 clock; resume rebases it to the supplied timestamp. The App keeps the engine
 in a stable ref so hot updates retain its session. Canvas drawing runs before the
 next paint opportunity; hold/next previews update only when their shape changes.
+The layout updates when displayed values or handlers change; cursor movement and
+escape steps update the canvas without rebuilding unchanged controls and panels.
 
 ## Checks
 
@@ -88,7 +96,7 @@ pnpm test         # mechanics, UI and session tests
 pnpm quality      # types, lint, coverage, unused code and duplication gates
 pnpm build
 pnpm benchmark:idle   # compare merged main with the current working tree
-pnpm benchmark:engine # seeded sessions and exact path/snapshot equivalence
+pnpm benchmark:engine # seeded sessions, all-shape controls and active animation
 ```
 
 The session tests assert zero requested callbacks while idle, full animation beats
@@ -100,7 +108,9 @@ source hashes, environment, raw samples and workload definitions. Both alternate
 baseline/candidate order after warmup. The idle benchmark supplies 600 frame
 opportunities, invoking only requested callbacks. The engine benchmark verifies
 exact escape paths and intermediate session snapshots before timing native Node
-modules. To compare revisions and retain JSON without pnpm's command banner:
+modules. It also checks every shape at the cursor boundaries and fractional-clock
+animation with a stationary valid ghost. Setup stays outside control/animation
+timing. To compare revisions and retain JSON without pnpm's command banner:
 
 ```sh
 node scripts/benchmark-idle.mjs 3d2d541 HEAD > /tmp/sirtet-idle.json
@@ -115,6 +125,9 @@ input-to-paint latency or battery savings. See
 results, browser checks and remaining limitations. The subsequent
 [efficiency continuation](goals/improve-sirtet-efficiency-report.md) compares against
 `64b4c82` and covers drawing latency, search, replay export and asset generation.
+The [deep optimization report](goals/improve-sirtet-deep-optimization-report.md)
+compares against `36f753d`, including retained replay memory, layout work, startup,
+expanded engine workloads, rejected experiments and the unmet session-time target.
 
 Before shipping, check these behaviors in a real browser:
 
