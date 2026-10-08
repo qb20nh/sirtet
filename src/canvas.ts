@@ -152,7 +152,7 @@ function fillCells(
 }
 
 function drawCarveCursor(context: CanvasRenderingContext2D, state: GameSnapshot): void {
-  if (state.gameState !== 'PLAYING') return;
+  if (state.gameState !== 'PLAYING' && state.gameState !== 'PAUSED') return;
 
   const cells = getCells(state.currentShapeType, state.mouseX, state.mouseY, state.currentRotation);
   context.strokeStyle =

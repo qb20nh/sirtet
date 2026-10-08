@@ -11,6 +11,8 @@
     "typecheck": "tsc -b",
     "test": "vitest run --passWithNoTests",
     "test:watch": "vitest",
+    "test:session": "vitest run test/session.test.ts",
+    "benchmark:idle": "node scripts/benchmark-idle.mjs",
     "coverage": "vitest run --coverage --passWithNoTests",
     "lint": "biome check .",
     "format": "biome format --write .",

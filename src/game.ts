@@ -9,7 +9,7 @@ const PATH_AWARE_PACK_TOP = BASELINE - 6;
 
 export type ShapeType = 'I' | 'J' | 'L' | 'O' | 'S' | 'T' | 'Z';
 export type Rotation = 0 | 1 | 2 | 3;
-type GameState = 'READY' | 'PLAYING' | 'GAMEOVER' | 'WIN';
+type GameState = 'READY' | 'PLAYING' | 'PAUSED' | 'GAMEOVER' | 'WIN';
 export type Board = number[][];
 
 export interface Cell {
@@ -1327,7 +1327,9 @@ function getRotationDistance(rotation: Rotation): number {
 }
 
 export function shouldPreventKey(key: string, code = ''): boolean {
-  return GAME_KEYS.includes(key) || code === 'Space';
+  return (
+    GAME_KEYS.some((gameKey) => gameKey.toLowerCase() === key.toLowerCase()) || code === 'Space'
+  );
 }
 
 export function rotateLeft(rotation: Rotation): Rotation {
@@ -1349,6 +1351,31 @@ export class ReverseTetrisEngine {
 
   snapshot(): GameSnapshot {
     return cloneSnapshot(this.state);
+  }
+
+  isPlaying(): boolean {
+    return this.state.gameState === 'PLAYING';
+  }
+
+  getTickTimestamp(): number {
+    return this.state.lastTime;
+  }
+
+  isEscaping(): boolean {
+    return this.isPlaying() && this.state.activePiece !== null;
+  }
+
+  pause(): boolean {
+    if (!this.isPlaying()) return false;
+    this.state.gameState = 'PAUSED';
+    return true;
+  }
+
+  resume(timestamp: number): boolean {
+    if (this.state.gameState !== 'PAUSED') return false;
+    this.state.lastTime = timestamp;
+    this.state.gameState = 'PLAYING';
+    return true;
   }
 
   start(timestamp = 0, options: GameStartOptions = {}): GameSnapshot {
@@ -1442,6 +1469,7 @@ export class ReverseTetrisEngine {
     return true;
   }
 
+  // Timer accumulation is private; callers only need a new snapshot for visible transitions.
   tick(timestamp: number): boolean {
     if (this.state.gameState !== 'PLAYING') {
       return false;
@@ -1451,10 +1479,11 @@ export class ReverseTetrisEngine {
     this.state.lastTime = timestamp;
 
     if (!this.state.activePiece) {
-      return true;
+      return false;
     }
 
     this.state.activePiece.timer += elapsed;
+    let visibleStateChanged = false;
 
     while (
       this.state.activePiece.timer >=
@@ -1466,6 +1495,7 @@ export class ReverseTetrisEngine {
         this.state.escapeStepDelay,
       );
       this.state.activePiece.pathIndex++;
+      visibleStateChanged = true;
       this.validateGhost();
     }
 
@@ -1483,10 +1513,11 @@ export class ReverseTetrisEngine {
 
       this.state.activePiece = this.state.queuedPiece;
       this.state.queuedPiece = null;
+      visibleStateChanged = true;
       this.validateGhost();
     }
 
-    return true;
+    return visibleStateChanged;
   }
 
   validateGhost(): boolean {
@@ -1682,7 +1713,8 @@ export class ReverseTetrisEngine {
 
   private getNextShape(previousShape: ShapeType | null): ShapeType {
     if (this.state.shapeBag.length === 0) {
-      this.state.shapeBag = [...SHAPE_KEYS].sort(() => this.rng() - 0.5);
+      this.state.shapeBag = [...SHAPE_KEYS];
+      shuffleInPlace(this.state.shapeBag, this.rng);
 
       if (this.state.isFirstBag) {
         moveShapeToBagFront(this.state.shapeBag, 'S');

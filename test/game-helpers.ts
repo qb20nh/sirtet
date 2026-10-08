@@ -8,13 +8,16 @@ import {
   type Rotation,
 } from '../src/game';
 
-export function moveToValidPlacement(engine: ReverseTetrisEngine): PathStep {
+export function moveToValidPlacement(
+  engine: ReverseTetrisEngine,
+  command = (key: string) => engine.handleKey(key),
+): PathStep {
   const placement = findValidPlacement(engine.snapshot());
   if (!placement) {
     throw new Error('No valid placement found for test shape.');
   }
 
-  moveCursor(engine, placement);
+  moveCursor(engine, placement, command);
 
   return placement;
 }
@@ -36,13 +39,17 @@ function findValidPlacement(state: GameSnapshot): PathStep | null {
   return null;
 }
 
-function moveCursor(engine: ReverseTetrisEngine, target: PathStep): void {
+function moveCursor(
+  engine: ReverseTetrisEngine,
+  target: PathStep,
+  command: (key: string) => boolean,
+): void {
   for (let guard = 0; engine.snapshot().currentRotation !== target.r && guard < 4; guard++) {
-    engine.handleKey('x');
+    command('x');
   }
 
-  while (engine.snapshot().mouseX > target.x) engine.handleKey('ArrowLeft');
-  while (engine.snapshot().mouseX < target.x) engine.handleKey('ArrowRight');
-  while (engine.snapshot().mouseY > target.y) engine.handleKey('ArrowUp');
-  while (engine.snapshot().mouseY < target.y) engine.handleKey('ArrowDown');
+  while (engine.snapshot().mouseX > target.x) command('ArrowLeft');
+  while (engine.snapshot().mouseX < target.x) command('ArrowRight');
+  while (engine.snapshot().mouseY > target.y) command('ArrowUp');
+  while (engine.snapshot().mouseY < target.y) command('ArrowDown');
 }

@@ -94,6 +94,24 @@ describe('ReverseTetrisEngine', () => {
     expect(internals.state.previewQueue[1]).not.toBe('Z');
   });
 
+  it('produces a portable seeded shape stream through four bags', () => {
+    const engine = new ReverseTetrisEngine(createTestRng(1));
+    const first = engine.start();
+    const internals = engine as unknown as { takePreviewShape: () => ShapeType };
+    const stream = [first.currentShapeType];
+    for (let index = 1; index < 28; index++) stream.push(internals.takePreviewShape());
+
+    expect(stream.join('')).toBe('OILTJSZSZLOJITILJZSOTLSJIOZT');
+    expect(stream.slice(0, 5)).not.toContain('S');
+    expect(stream.slice(0, 5)).not.toContain('Z');
+    for (let offset = 0; offset < stream.length; offset += 7) {
+      expect([...stream.slice(offset, offset + 7)].sort()).toEqual(ALL_SHAPE_TYPES);
+    }
+    for (let index = 1; index < stream.length; index++) {
+      expect(stream[index]).not.toBe(stream[index - 1]);
+    }
+  });
+
   it('moves, rotates, swaps, and prevents only game keys', () => {
     const engine = new ReverseTetrisEngine(() => 0.5);
     const start = engine.start();
@@ -322,7 +340,7 @@ describe('ReverseTetrisEngine', () => {
 
     expect(engine.tick(100)).toBe(false);
     engine.start();
-    expect(engine.tick(100)).toBe(true);
+    expect(engine.tick(100)).toBe(false);
     expect(engine.handleKey('Enter')).toBe(false);
 
     for (let guard = 0; guard < 20; guard++) {

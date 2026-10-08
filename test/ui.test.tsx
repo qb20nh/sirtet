@@ -1,22 +1,25 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import {
-  buildReplayDownload,
   type CanvasRefs,
   ControlList,
-  createKeyDownHandler,
-  createReplayLog,
-  createSeededRng,
   drawCanvases,
   GameLayout,
   Metric,
   Overlay,
   PanelCanvas,
   StatusBlock,
-  startAnimationLoop,
-  startEngine,
+  TouchControls,
 } from '../src/App';
 import { ReverseTetrisEngine } from '../src/game';
+import {
+  buildReplayDownload,
+  createKeyDownHandler,
+  createReplayLog,
+  createSeededRng,
+  startAnimationLoop,
+  startEngine,
+} from '../src/session';
 import { CONTROL_HINTS, getOverlayContent, getStatusPresentation } from '../src/ui';
 import { moveToValidPlacement } from './game-helpers';
 
@@ -122,6 +125,7 @@ describe('UI helpers and layout', () => {
       'Z / X',
       'C / Shift',
       'Space / Enter',
+      'P / Esc',
     ]);
 
     const stuckState = { ...state, easyMode: true, noLegalCarveAfterHoldSwap: true };
@@ -232,7 +236,7 @@ describe('UI helpers and layout', () => {
     );
 
     expect(replay).toMatchObject({
-      version: 1,
+      version: 3,
       seed: 123,
       options: { easyMode: true },
       snapshot: { easyMode: true, gameState: 'PLAYING' },
@@ -240,6 +244,7 @@ describe('UI helpers and layout', () => {
     expect(replay.events[0]).toEqual({
       type: 'start',
       t: 0,
+      clock: 0,
       seed: 123,
       options: { easyMode: true },
     });
@@ -315,7 +320,89 @@ describe('UI helpers and layout', () => {
       vi.fn(),
     );
     readyCallbacks[0]?.(1000);
-    expect(readyCallbacks).toHaveLength(1);
+    expect(readyCallbacks).toHaveLength(0);
+  });
+
+  it('offers resume without changing mode and dispatches touch commands once', () => {
+    const engine = new ReverseTetrisEngine(() => 0.5);
+    engine.start();
+    engine.pause();
+    const state = engine.snapshot();
+    const content = getOverlayContent(state);
+    expect(content).toMatchObject({ visible: true, title: 'PAUSED', buttonLabel: 'RESUME' });
+    expect(getStatusPresentation(state)).toEqual({
+      text: 'Paused. Resume when ready.',
+      tone: 'stable',
+      pulsing: false,
+    });
+    const onStart = vi.fn();
+    const overlay = Overlay({
+      content,
+      paused: true,
+      easyMode: false,
+      onStart,
+      onEasyModeChange: vi.fn(),
+    });
+    expect(overlay.props.children[2]).toBeNull();
+    overlay.props.children[3].props.onClick();
+    expect(onStart).toHaveBeenCalledOnce();
+
+    const onCommand = vi.fn();
+    const controls = TouchControls({ disabled: false, onCommand });
+    const buttons = controls.props.children;
+    expect(
+      buttons.map((button: { props: { 'aria-label': string } }) => button.props['aria-label']),
+    ).toEqual([
+      'Move up',
+      'Move left',
+      'Move down',
+      'Move right',
+      'Rotate left',
+      'Rotate right',
+      'Swap or hold',
+      'Carve block',
+    ]);
+    for (const button of buttons) {
+      expect(button.props.type).toBe('button');
+      button.props.onClick();
+    }
+    expect(onCommand.mock.calls.map(([key]) => key)).toEqual([
+      'ArrowUp',
+      'ArrowLeft',
+      'ArrowDown',
+      'ArrowRight',
+      'z',
+      'x',
+      'c',
+      'Enter',
+    ]);
+    for (const button of TouchControls({ disabled: true, onCommand }).props.children)
+      button.props.onClick();
+    expect(onCommand).toHaveBeenCalledTimes(8);
+  });
+
+  it('gives actionable hold advice before queue advice', () => {
+    const state = new ReverseTetrisEngine(() => 0.5).start();
+    expect(
+      getStatusPresentation({
+        ...state,
+        firstCarveDone: true,
+        currentShapeHasLegalCarve: false,
+        holdSwapShapeHasLegalCarve: true,
+        queuedPiece: createEscapePiece(),
+      }),
+    ).toEqual({
+      text: 'No carve for this shape. Swap/Hold to continue.',
+      tone: 'warning',
+      pulsing: true,
+    });
+    expect(
+      getStatusPresentation({
+        ...state,
+        firstCarveDone: true,
+        queuedPiece: createEscapePiece(),
+      }).text,
+    ).toBe('Queue full! Next carve advances the escape.');
   });
 });
 
