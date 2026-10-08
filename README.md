@@ -48,10 +48,10 @@ timestamp. To reconstruct a run, initialize
 `start(clock, options)`, `handleKey(key, code)`, `tick(clock)`, `pause()`, `resume(clock)`, or
 `endStuckEasyModeGame()` for `end-stuck`.
 
-Before input and export, the log captures the last processed engine tick without
-advancing the live game. This preserves time spent waiting before the first
-carve. While a piece escapes, every tick is recorded to reproduce the exact
-floating-point timer updates at step boundaries. This can add about 60 events
+While idle, input rebases the engine clock to the command time before a carve
+can start. Input and export then capture the last processed engine tick in the
+log; exporting does not advance the game. While a piece escapes, every tick is
+recorded to reproduce the exact floating-point timer updates at step boundaries. This can add about 60 events
 per second on a 60 Hz display; idle frames still add none. Boundary ticks may
 repeat or precede a key's timestamp; do not sort events by time, rebase `clock`,
 or advance the engine for key events. Version 2 files lack these timings and
@@ -72,37 +72,45 @@ runtime-dependent random sort. There is no replay import UI. See
 
 The engine owns the clock. `tick(timestamp)` returns true only when the visible
 state changes, so the session loop snapshots and publishes only those changes.
-Idle frames and intermediate timer increments do not redraw the canvases.
-Pause freezes the clock; resume rebases it to the supplied timestamp. The App
-keeps the engine in a stable ref so hot updates retain its session.
+The loop requests frames only while a piece is escaping. Idle input rebases the
+clock, and the App starts scheduling when a carve creates an active piece.
+Intermediate timer increments do not redraw the canvases. Pause freezes the
+clock; resume rebases it to the supplied timestamp. The App keeps the engine
+in a stable ref so hot updates retain its session.
 
 ## Checks
 
 ```sh
-pnpm test:session # idle-frame budget, timing, interruption/input and replay regressions
+pnpm test:session # idle scheduling, timing, interruption/input and replay regressions
 pnpm test         # mechanics, UI and session tests
 pnpm quality      # types, lint, coverage, unused code and duplication gates
 pnpm build
-pnpm benchmark:idle # compare original main with the current working tree
+pnpm benchmark:idle   # compare merged main with the current working tree
+pnpm benchmark:engine # seeded sessions and exact path/snapshot equivalence
 ```
 
-The idle-frame test runs 600 callbacks and asserts zero snapshots, publications
-and replay ticks. Its printed elapsed time is a diagnostic, not a stable timing
-threshold. Use the same Node version and machine for timing comparisons.
+The session tests assert zero requested callbacks while idle, full animation beats
+after long waits, and exact replay snapshots across active frames and interruptions.
+Performance measurements are diagnostics, not machine-dependent timing gates.
 
-The benchmark loads the actual engine and loop from Git, runs the same 600 idle
-callbacks for both revisions, and emits JSON with source hashes, environment,
-operation counts and raw timing samples. It uses five warmups and nine alternating
-rounds of twenty samples. To compare committed revisions and retain evidence:
+The benchmarks load the actual sources from Git and emit JSON with revision and
+source hashes, environment, raw samples and workload definitions. Both alternate
+baseline/candidate order after warmup. The idle benchmark supplies 600 frame
+opportunities, invoking only requested callbacks. The engine benchmark verifies
+exact escape paths and intermediate session snapshots before timing native Node
+modules. To compare revisions and retain JSON without pnpm's command banner:
 
 ```sh
-pnpm benchmark:idle dbb0f9942fa374a04d1ad746de5a87ac8513d8db HEAD > /tmp/sirtet-idle.log
+node scripts/benchmark-idle.mjs 3d2d541 HEAD > /tmp/sirtet-idle.json
+node scripts/benchmark-engine.mjs 3d2d541 HEAD > /tmp/sirtet-engine.json
 ```
 
-For JSON without pnpm's command banner, run `node scripts/benchmark-idle.mjs`
-with the same arguments. Timings cover instrumented Node callback work; they do
-not establish browser frame rate, input latency or battery savings. Both loops
-still request animation frames while playing.
+Use the same Node version and machine for comparisons. Idle timing includes the
+simulated scheduler; zero callbacks measures harness overhead. Engine timings
+measure synchronous workload execution. Neither establishes browser frame rate,
+input-to-paint latency or battery savings. See
+[the performance report](goals/improve-sirtet-performance-report.md) for measured
+results, browser checks and remaining limitations.
 
 Before shipping, check these behaviors in a real browser:
 
