@@ -208,7 +208,7 @@ export function buildReplayDownload(replay: ReplayLog, snapshot: GameSnapshot): 
   return JSON.stringify({ ...replay, snapshot });
 }
 
-function recordReplayBoundary(
+export function recordReplayBoundary(
   engine: ReverseTetrisEngine,
   recordReplayEvent: ReplayRecorder,
 ): void {
