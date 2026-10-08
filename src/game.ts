@@ -723,9 +723,13 @@ function searchEscapePath(
     const towardSpawn = x < SPAWN_X ? 1 : -1;
     enqueue(x + towardSpawn, y, rotation);
     enqueue(x - towardSpawn, y, rotation);
-    for (const nextRotation of getRotationOptions(rotation)) {
-      for (const [dx, dy] of getSrsKickOffsets(type, rotation, nextRotation)) {
-        if (enqueue(x + dx, y + dy, nextRotation)) break;
+    const options = getRotationOptions(rotation);
+    for (let optionIndex = 0; optionIndex < options.length; optionIndex++) {
+      const nextRotation = options[optionIndex];
+      const kicks = getSrsKickOffsets(type, rotation, nextRotation);
+      for (let kickIndex = 0; kickIndex < kicks.length; kickIndex++) {
+        const kick = kicks[kickIndex];
+        if (enqueue(x + kick[0], y + kick[1], nextRotation)) break;
       }
     }
   }

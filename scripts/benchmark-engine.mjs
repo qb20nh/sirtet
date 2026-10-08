@@ -42,7 +42,8 @@ async function loadEngine(ref, index) {
   const source =
     ref === 'WORKTREE'
       ? readFileSync(join(root, 'src/game.ts'), 'utf8')
-      : await git('show', `${revision}:src/game.ts`);
+      : (await execute('git', ['show', `${revision}:src/game.ts`], { cwd: root, encoding: 'utf8' }))
+          .stdout;
   const filename = join(scratch, `engine-${index}.cjs`);
   writeFileSync(
     filename,
@@ -296,9 +297,12 @@ function workloads(api, fixtures) {
 
 function measure(prepare) {
   const run = prepare();
+  const cpuStart = process.threadCpuUsage?.();
   const start = performance.now();
   run();
-  return performance.now() - start;
+  const elapsedMs = performance.now() - start;
+  const cpu = cpuStart ? process.threadCpuUsage(cpuStart) : null;
+  return { elapsedMs, cpuMs: cpu ? (cpu.user + cpu.system) / 1000 : null };
 }
 
 try {
@@ -314,9 +318,12 @@ try {
       for (const suite of suites) measure(suite[name]);
     }
     const samples = [[], []];
+    const cpuSamples = [[], []];
     for (let round = 0; round < rounds; round++) {
       for (const index of round % 2 ? [1, 0] : [0, 1]) {
-        samples[index].push(measure(suites[index][name]));
+        const sample = measure(suites[index][name]);
+        samples[index].push(sample.elapsedMs);
+        if (sample.cpuMs !== null) cpuSamples[index].push(sample.cpuMs);
       }
     }
     const medians = samples.map(
@@ -328,6 +335,14 @@ try {
       baselineMedianMs: medians[0],
       candidateMedianMs: medians[1],
       speedup: medians[0] / medians[1],
+      mainThreadCpu: cpuSamples[0].length
+        ? {
+            baselineSamplesMs: cpuSamples[0],
+            candidateSamplesMs: cpuSamples[1],
+            baselineMedianMs: [...cpuSamples[0]].sort((a, b) => a - b)[Math.floor(rounds / 2)],
+            candidateMedianMs: [...cpuSamples[1]].sort((a, b) => a - b)[Math.floor(rounds / 2)],
+          }
+        : null,
     };
   }
   console.log(
@@ -369,6 +384,8 @@ try {
         results,
         interpretation:
           'Engine elapsed time in native Node modules; no browser rendering or input latency. ' +
+          'Main-thread CPU is separately reported when supported by Node; it excludes scheduling waits and work on other threads, and includes CPU-counter overhead. ' +
+          'Zero or quantized CPU samples reflect counter resolution, not zero work. ' +
           'Module compilation, trace validation, and movement setup are untimed; startup and session workloads include engine construction. ' +
           'Both revisions run alternating rounds in the same process. Fixed traces cover normal/easy mode and 20 successful carves. ' +
           'Supplemental workloads use fresh engines prepared outside timing through public inputs: seven shapes at all cursor boundaries, ' +
