@@ -382,6 +382,11 @@ const ESCAPE_GEOMETRY = Object.fromEntries(
   ]),
 ) as Record<ShapeType, { minX: number; maxX: number; maxY: number; rows: [number, number][] }[]>;
 const CELL_COUNT = ROWS * COLS;
+// Board dimensions keep the packed row and one-hot column mask within 16 bits.
+const CELL_ADDRESSES = Uint16Array.from(
+  { length: CELL_COUNT },
+  (_, index) => (Math.floor(index / COLS) << COLS) | (1 << (index % COLS)),
+);
 const ESCAPE_STATE_COUNT = (ROWS + 8) * (COLS + 8) * 4;
 // Searches are synchronous and invoke no callbacks while using this workspace.
 // The board and iteration limits bound retained queues; returned paths own their steps.
@@ -450,13 +455,13 @@ interface CarvePlacement {
   y: number;
   rotation: Rotation;
   cells: Cell[];
-  cellIndexes: number[];
-  cellKey: string;
-  supportIndexes: number[];
+  cellKey: number;
   hasFloorSupport: boolean;
 }
 
 interface PlacementMetadata {
+  cellAddresses: Uint16Array;
+  supportAddresses: Uint16Array;
   placements: CarvePlacement[];
   idsByKey: Map<string, number>;
   idsByShape: Map<ShapeType, number[]>;
@@ -771,6 +776,9 @@ export function hasLegalCarvePlacement(board: Board, type: ShapeType | null | un
 
 function createPlacementMetadata(): PlacementMetadata {
   const placements: CarvePlacement[] = [];
+  const cellPatternIds = new Map<string, number>();
+  const cellAddresses: number[] = [];
+  const supportAddresses: number[] = [];
   const idsByKey = new Map<string, number>();
   const idsByShape = new Map<ShapeType, number[]>();
   const filledPlacementIdsByCell = Array.from({ length: CELL_COUNT }, () => [] as number[]);
@@ -793,13 +801,22 @@ function createPlacementMetadata(): PlacementMetadata {
       );
       const cellOffsets = coords.map(([x, y]) => y * COLS + x);
       const sortedCellOffsets = [...cellOffsets].sort((left, right) => left - right);
+      // Normalized offsets and the smallest cell index uniquely identify a cell set.
+      const minimumCellOffset = sortedCellOffsets[0];
+      const cellPattern = sortedCellOffsets.map((offset) => offset - minimumCellOffset).join('_');
+      let patternId = cellPatternIds.get(cellPattern);
+      if (patternId === undefined) {
+        patternId = cellPatternIds.size;
+        cellPatternIds.set(cellPattern, patternId);
+      }
+      const cellKeyOffset = patternId * CELL_COUNT + minimumCellOffset;
 
       for (let y = 0 - minY; y < ROWS - maxY; y++) {
         for (let x = 0 - minX; x < COLS - maxX; x++) {
           const cells = getCells(type, x, y, rotation);
           const anchorIndex = y * COLS + x;
           const cellIndexes = cellOffsets.map((offset) => anchorIndex + offset);
-          const cellKey = sortedCellOffsets.map((offset) => anchorIndex + offset).join('_');
+          const cellKey = cellKeyOffset + anchorIndex;
           const hasFloorSupport = y + maxY === ROWS - 1;
           const supportIndexes = (
             hasFloorSupport
@@ -807,6 +824,13 @@ function createPlacementMetadata(): PlacementMetadata {
               : supportCoords
           ).map(([supportX, supportY]) => (y + supportY + 1) * COLS + x + supportX);
 
+          // Four slots per placement; unused support slots carry a zero mask.
+          for (let cell = 0; cell < 4; cell++) {
+            cellAddresses.push(CELL_ADDRESSES[cellIndexes[cell]]);
+            supportAddresses.push(
+              cell < supportIndexes.length ? CELL_ADDRESSES[supportIndexes[cell]] : 0,
+            );
+          }
           const id = placements.length;
           const placement: CarvePlacement = {
             id,
@@ -815,9 +839,7 @@ function createPlacementMetadata(): PlacementMetadata {
             y,
             rotation,
             cells,
-            cellIndexes,
             cellKey,
-            supportIndexes,
             hasFloorSupport,
           };
 
@@ -838,6 +860,8 @@ function createPlacementMetadata(): PlacementMetadata {
 
   return {
     placements,
+    cellAddresses: Uint16Array.from(cellAddresses),
+    supportAddresses: Uint16Array.from(supportAddresses),
     idsByKey,
     idsByShape,
     filledPlacementIdsByCell,
@@ -851,9 +875,14 @@ function createCarveLegalityIndex(board: Board): CarveLegalityIndex {
   const supportCountByPlacement = new Uint8Array(PLACEMENT_METADATA.placements.length);
 
   for (const placement of PLACEMENT_METADATA.placements) {
-    filledCountByPlacement[placement.id] = countFilledIndexes(rowBits, placement.cellIndexes);
+    filledCountByPlacement[placement.id] = countFilledAddresses(
+      rowBits,
+      PLACEMENT_METADATA.cellAddresses,
+      placement.id,
+    );
     supportCountByPlacement[placement.id] =
-      countFilledIndexes(rowBits, placement.supportIndexes) + (placement.hasFloorSupport ? 1 : 0);
+      countFilledAddresses(rowBits, PLACEMENT_METADATA.supportAddresses, placement.id) +
+      (placement.hasFloorSupport ? 1 : 0);
   }
 
   return {
@@ -929,7 +958,7 @@ function getLegalPathForPlacement(
   let escapePath: PathStep[] | null = null;
 
   if (
-    legalityIndex.filledCountByPlacement[placementId] === placement.cellIndexes.length &&
+    legalityIndex.filledCountByPlacement[placementId] === placement.cells.length &&
     legalityIndex.supportCountByPlacement[placementId] > 0 &&
     isPreparedBoardValidInIndex(board, legalityIndex)
   ) {
@@ -1027,12 +1056,16 @@ function createRowBits(board: Board): number[] {
   );
 }
 
-function countFilledIndexes(rowBits: number[], indexes: number[]): number {
+function countFilledAddresses(
+  rowBits: number[],
+  addresses: Uint16Array,
+  placementId: number,
+): number {
   let count = 0;
-  for (const index of indexes) {
-    const y = Math.floor(index / COLS);
-    const x = index % COLS;
-    if ((rowBits[y] & (1 << x)) !== 0) count++;
+  const start = placementId * 4;
+  for (let offset = start; offset < start + 4; offset++) {
+    const address = addresses[offset];
+    if ((rowBits[address >>> COLS] & (address & ((1 << COLS) - 1))) !== 0) count++;
   }
   return count;
 }
@@ -2022,16 +2055,19 @@ function findUniquePlacementsForCell(
   stableResultByPlacement?: Map<number, boolean>,
 ): Cell[][] {
   const placements: Cell[][] = [];
-  const seen = new Set<string>();
+  const seen = new Set<number>();
   const index = cellIndex({ x, y });
 
   for (const placementId of PLACEMENT_METADATA.filledPlacementIdsByCell[index]) {
     const placement = PLACEMENT_METADATA.placements[placementId];
     if (seen.has(placement.cellKey)) continue;
-    if (countFilledIndexes(rowBits, placement.cellIndexes) !== placement.cellIndexes.length)
+    if (
+      countFilledAddresses(rowBits, PLACEMENT_METADATA.cellAddresses, placement.id) !==
+      placement.cells.length
+    )
       continue;
     if (
-      countFilledIndexes(rowBits, placement.supportIndexes) +
+      countFilledAddresses(rowBits, PLACEMENT_METADATA.supportAddresses, placement.id) +
         (placement.hasFloorSupport ? 1 : 0) ===
       0
     ) {

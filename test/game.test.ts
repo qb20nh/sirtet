@@ -582,6 +582,25 @@ describe('pure game rules', () => {
     expect(performance.now() - started).toBeLessThan(1000);
   });
 
+  it('keeps every rotated tetromino legal when supported only by the floor', () => {
+    for (const type of ALL_SHAPE_TYPES) {
+      for (const rotation of [0, 1, 2, 3] as Rotation[]) {
+        const offsets = getCells(type, 0, 0, rotation);
+        const minX = Math.min(...offsets.map((cell) => cell.x));
+        const maxX = Math.max(...offsets.map((cell) => cell.x));
+        const y = ROWS - 1 - Math.max(...offsets.map((cell) => cell.y));
+        for (const x of [-minX, COLS - 1 - maxX]) {
+          const board = createBoardFromCells(getCells(type, x, y, rotation));
+          const before = board.map((row) => [...row]);
+          expect(isBoardValid(board, [])).toBe(true);
+          expect(findLegalCarvePath(board, type, x, y, rotation)).not.toBeNull();
+          expect(hasLegalCarvePlacement(board, type)).toBe(true);
+          expect(board).toEqual(before);
+        }
+      }
+    }
+  });
+
   it('validates board stability and escape paths', () => {
     const board = createInitialBoard();
     const validCells = getCells('O', 0, BASELINE - 3, 0);
