@@ -1,4 +1,4 @@
-import type { ComponentChildren, RefObject } from 'preact';
+import { Component, type ComponentChildren, type RefObject } from 'preact';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'preact/hooks';
 
 import { drawGame, drawShapePreview } from './canvas';
@@ -140,18 +140,20 @@ export function App() {
   }, [engine, recordReplayEvent, state.gameState, isEscaping]);
 
   return (
-    <GameLayout
-      canvasRefs={canvasRefs}
-      overlay={getOverlayContent(state)}
-      easyMode={easyMode}
-      state={state}
-      status={getStatusPresentation(state)}
-      onDownloadReplay={downloadCurrentReplay}
-      onEndStuckEasyModeGame={endStuckEasyModeGame}
-      onEasyModeChange={setEasyMode}
-      onStart={state.gameState === 'PAUSED' ? togglePause : startMatch}
-      onTogglePause={togglePause}
-      onCommand={touchCommand}
+    <MemoizedGameLayout
+      {...getLayoutPresentation({
+        canvasRefs,
+        overlay: getOverlayContent(state),
+        easyMode,
+        state,
+        status: getStatusPresentation(state),
+        onDownloadReplay: downloadCurrentReplay,
+        onEndStuckEasyModeGame: endStuckEasyModeGame,
+        onEasyModeChange: setEasyMode,
+        onStart: state.gameState === 'PAUSED' ? togglePause : startMatch,
+        onTogglePause: togglePause,
+        onCommand: touchCommand,
+      })}
     />
   );
 }
@@ -171,29 +173,92 @@ export interface GameLayoutProps {
   onCommand?: (key: string) => void;
 }
 
-export function GameLayout({
+// Display values and stable callbacks let canvas-only changes skip the DOM tree.
+export function getLayoutPresentation({ state, overlay, status, ...controls }: GameLayoutProps) {
+  return {
+    ...controls,
+    gameState: state.gameState,
+    score: state.score,
+    level: state.level,
+    holdShapeType: state.holdShapeType,
+    nextShapes: state.previewQueue.join(' / '),
+    canEndStuckEasyModeGame:
+      state.gameState === 'PLAYING' && state.easyMode && state.noLegalCarveAfterHoldSwap,
+    overlayVisible: overlay.visible,
+    overlayTitle: overlay.title,
+    overlayTitleTone: overlay.titleTone,
+    overlayDescription: overlay.description,
+    overlayButtonLabel: overlay.buttonLabel,
+    statusText: status.text,
+    statusTone: status.tone,
+    statusPulsing: status.pulsing,
+  };
+}
+
+export function GameLayout(props: GameLayoutProps) {
+  return GameLayoutView(getLayoutPresentation(props));
+}
+
+export class MemoizedGameLayout extends Component<ReturnType<typeof getLayoutPresentation>> {
+  shouldComponentUpdate(next: ReturnType<typeof getLayoutPresentation>): boolean {
+    const keys = Object.keys(next) as Array<keyof typeof next>;
+    return (
+      keys.length !== Object.keys(this.props).length ||
+      keys.some((key) => next[key] !== this.props[key])
+    );
+  }
+
+  render() {
+    return GameLayoutView(this.props);
+  }
+}
+
+function GameLayoutView({
   canvasRefs,
-  overlay,
   easyMode,
-  state,
-  status,
+  gameState,
+  score,
+  level,
+  holdShapeType,
+  nextShapes,
+  canEndStuckEasyModeGame,
+  overlayVisible,
+  overlayTitle,
+  overlayTitleTone,
+  overlayDescription,
+  overlayButtonLabel,
+  statusText,
+  statusTone,
+  statusPulsing,
   onDownloadReplay,
   onEndStuckEasyModeGame,
   onEasyModeChange,
   onStart,
   onTogglePause = () => {},
   onCommand = () => {},
-}: GameLayoutProps) {
+}: ReturnType<typeof getLayoutPresentation>) {
+  const overlay: OverlayContent = {
+    visible: overlayVisible,
+    title: overlayTitle,
+    titleTone: overlayTitleTone,
+    description: overlayDescription,
+    buttonLabel: overlayButtonLabel,
+  };
+  const status: StatusPresentation = {
+    text: statusText,
+    tone: statusTone,
+    pulsing: statusPulsing,
+  };
   return (
-    <main class="game-shell" data-state={state.gameState.toLowerCase()}>
+    <main class="game-shell" data-state={gameState.toLowerCase()}>
       <section class="game-frame" aria-label="Reverse Tetris game">
         <aside class="panel panel-left" aria-label="Stats and hold">
           <div class="metric-row">
-            <Metric label="Score" value={state.score} tone="cyan" />
-            <Metric label="Lvl" value={state.level} tone="purple" alignRight />
+            <Metric label="Score" value={score} tone="cyan" />
+            <Metric label="Lvl" value={level} tone="purple" alignRight />
           </div>
 
-          <PanelCanvas label="Hold (C/Shift)" type={state.holdShapeType}>
+          <PanelCanvas label="Hold (C/Shift)" type={holdShapeType}>
             <canvas ref={canvasRefs.hold} width="80" height="80" aria-label="Held shape" />
           </PanelCanvas>
 
@@ -211,19 +276,19 @@ export function GameLayout({
         <section class="board-column" aria-label="Game board and actions">
           <div class="game-toolbar">
             <span>
-              Score {state.score} · Lvl {state.level}
+              Score {score} · Lvl {level}
             </span>
             <button
               type="button"
               class="pause-button"
-              disabled={state.gameState !== 'PLAYING' && state.gameState !== 'PAUSED'}
+              disabled={gameState !== 'PLAYING' && gameState !== 'PAUSED'}
               onClick={onTogglePause}
             >
-              {state.gameState === 'PAUSED' ? 'Resume' : 'Pause'}
+              {gameState === 'PAUSED' ? 'Resume' : 'Pause'}
             </button>
           </div>
           <div class="board-shapes">
-            Hold {state.holdShapeType ?? '—'} · Next {state.previewQueue.join(' / ')}
+            Hold {holdShapeType ?? '—'} · Next {nextShapes}
           </div>
           <div class="board-status">
             <StatusBlock status={status} />
@@ -242,10 +307,10 @@ export function GameLayout({
               easyMode={easyMode}
               onEasyModeChange={onEasyModeChange}
               onStart={onStart}
-              paused={state.gameState === 'PAUSED'}
+              paused={gameState === 'PAUSED'}
             />
           </div>
-          <TouchControls disabled={state.gameState !== 'PLAYING'} onCommand={onCommand} />
+          <TouchControls disabled={gameState !== 'PLAYING'} onCommand={onCommand} />
         </section>
 
         <aside class="panel panel-right" aria-label="Next shapes and controls">
@@ -264,9 +329,7 @@ export function GameLayout({
           </div>
 
           <ControlList
-            canEndStuckEasyModeGame={
-              state.gameState === 'PLAYING' && state.easyMode && state.noLegalCarveAfterHoldSwap
-            }
+            canEndStuckEasyModeGame={canEndStuckEasyModeGame}
             onDownloadReplay={onDownloadReplay}
             onEndStuckEasyModeGame={onEndStuckEasyModeGame}
           />
