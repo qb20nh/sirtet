@@ -88,6 +88,11 @@ next paint opportunity; hold/next previews update only when their shape changes.
 The layout updates when displayed values or handlers change; cursor movement and
 escape steps update the canvas without rebuilding unchanged controls and panels.
 
+Private placement metadata uses flat typed buffers for cell/support addresses and
+small integer keys for identical cell sets. The packed addresses rely on the fixed
+10-column, 26-row board and four-cell tetrominoes. Returned paths and snapshots
+remain independently owned.
+
 ## Checks
 
 ```sh
@@ -119,7 +124,9 @@ node scripts/benchmark-engine.mjs 3d2d541 HEAD > /tmp/sirtet-engine.json
 
 Use the same Node version and machine for comparisons. Idle timing includes the
 simulated scheduler; zero callbacks measures harness overhead. Engine timings
-measure synchronous workload execution. Neither establishes browser frame rate,
+measure synchronous workload execution. Main-thread CPU is also reported when
+Node supports it; it excludes other threads and scheduling waits, and short samples
+may fall below counter resolution. Neither establishes browser frame rate,
 input-to-paint latency or battery savings. See
 [the performance report](goals/improve-sirtet-performance-report.md) for measured
 results, browser checks and remaining limitations. The subsequent
@@ -128,6 +135,9 @@ results, browser checks and remaining limitations. The subsequent
 The [deep optimization report](goals/improve-sirtet-deep-optimization-report.md)
 compares against `36f753d`, including retained replay memory, layout work, startup,
 expanded engine workloads, rejected experiments and the unmet session-time target.
+The [search and layout follow-up](goals/improve-sirtet-layout-report.md) compares
+against `f008564`, records flat placement storage and smaller deduplication keys,
+and reassesses the earlier session target with final measurements and tradeoffs.
 
 Before shipping, check these behaviors in a real browser:
 
